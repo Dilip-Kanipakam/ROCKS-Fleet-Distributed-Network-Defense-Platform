@@ -40,3 +40,5 @@ The Hub can run on the same Linux machine as Edge at `http://127.0.0.1:8000`, or
 - Dashboard sessions are separate from Edge API-key authentication
 - Synthetic simulator data is local and safe; it does not touch network interfaces
 - Alert email is disabled by default and no automatic response is performed
+- Configure a managed switch SPAN destination port to deliver selected traffic to Edge
+- `rocks edge run --dry-run` validates the local pipeline without root or an interface

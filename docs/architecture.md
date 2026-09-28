@@ -68,3 +68,5 @@ The model uses existing behavior-summary fields and time-of-day/day-of-week feat
 Chunk 6 adds the administrator-facing Command Center. It uses signed sessions, bounded read-only queries, and local Jinja2 templates. Dashboard views expose health, Edge status, telemetry metadata, analysis events, retention priorities, and traffic history without exposing credentials or enabling network enforcement.
 
 Chunk 7 completes the local MVP integration with deterministic synthetic telemetry scenarios and a lightweight alert engine. Alerts are generated from existing ML analysis results when anomaly or retention thresholds are crossed, stored in the existing Hub database, and exposed through the read-only dashboard. They are investigation signals, not attack classifications.
+
+The live Edge agent in Chunk 8 composes the existing Edge modules into one process. It captures metadata from an authorized interface, creates bounded feature summaries, persists telemetry locally, buffers it durably, and sends acknowledged records to the Hub. The Hub is optional at runtime; local buffering remains the reliability boundary.

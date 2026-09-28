@@ -42,6 +42,30 @@ For visibility into traffic from other devices or network segments, the sensor s
 
 Deploy and operate Edge only on networks and systems where monitoring is authorized. ROCKS is passive and metadata-first: it does not scan, attack, block, or disconnect devices.
 
+## Live Edge agent
+
+The operational agent connects the existing capture, parser, flow, feature, telemetry, local SQLite, persistent buffer, and Hub sender components:
+
+```text
+Interface -> metadata parser -> flows/features -> telemetry -> local storage/buffer -> Hub
+```
+
+Start it with:
+
+```bash
+rocks edge run --interface eth0 --hub-url http://127.0.0.1:8000 --api-key '<edge-api-key>' --sensor-id ROCKS-EDGE-01
+```
+
+The API key is never printed or included in status output. When the Hub is unavailable, telemetry remains in the local SQLite buffer. Records are removed only after successful Hub acknowledgement. Stop with `Ctrl+C`; the agent stops capture and flushes safe local state.
+
+For a non-root demonstration without a physical interface:
+
+```bash
+rocks edge run --dry-run
+```
+
+The Edge requires a managed-switch SPAN or port-mirroring setup for visibility into selected ports or VLANs. Connecting a laptop to an ordinary switch port does not automatically expose all network traffic.
+
 ## Planned later chunks
 
 Telemetry transmission, local database storage, ROCKS Hub, ML, anomaly and retention scoring, and the Command Center dashboard are not implemented in Chunk 2.

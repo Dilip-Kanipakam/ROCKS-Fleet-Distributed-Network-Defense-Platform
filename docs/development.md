@@ -62,3 +62,5 @@ The project is intentionally planned in chunks so the architecture remains coher
 - deployment packaging
 - production hardening
 - operational testing and documentation updates
+
+Chunk 8 live Edge operation is implemented as part of the existing Edge layer: `rocks edge run`, local-first buffering, bounded Hub sending, dry-run mode, and graceful shutdown.

@@ -6,7 +6,8 @@ import tempfile
 from pathlib import Path
 
 from rocks import __version__
-from rocks.config import get_config_path
+from rocks.config import get_config_path, get_edge_agent_config
+from rocks.edge.agent import EdgeAgent, EdgeAgentConfig, install_signal_handlers
 from rocks.edge.capture import CaptureError, PacketCapture
 from rocks.edge.features import aggregate_features
 from rocks.edge.flow import FlowTracker
@@ -65,6 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     storage_parser = edge_subparsers.add_parser("storage", help="local Edge storage commands")
     storage_subparsers = storage_parser.add_subparsers(dest="storage_command")
     storage_subparsers.add_parser("status", help="show local telemetry storage status")
+    run_edge = edge_subparsers.add_parser("run", help="run the live Edge agent")
+    run_edge.add_argument("--interface")
+    run_edge.add_argument("--hub-url")
+    run_edge.add_argument("--api-key")
+    run_edge.add_argument("--sensor-id")
+    run_edge.add_argument("--dry-run", action="store_true")
+    edge_subparsers.add_parser("test-hub", help="check Hub health connectivity")
     hub_parser = subparsers.add_parser("hub", help="ROCKS Hub commands")
     hub_subparsers = hub_parser.add_subparsers(dest="hub_command")
     hub_subparsers.add_parser("status", help="show Hub status")
@@ -164,8 +172,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "edge":
         if args.edge_command == "status":
-            print("ROCKS Edge observation layer is available.")
-            print("Live capture is not running.")
+            values = get_edge_agent_config()
+            agent = EdgeAgent(EdgeAgentConfig(**values))
+            for key, value in agent.status().items():
+                print(f"{key.replace('_', ' ').title()}: {value}")
             return 0
         if args.edge_command == "test":
             return _synthetic_edge_test()
@@ -176,6 +186,39 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"ROCKS Edge capture error: {exc}", file=sys.stderr)
                 return 2
             return 0
+        if args.edge_command == "run":
+            values = get_edge_agent_config()
+            overrides = {
+                "interface": args.interface,
+                "hub_url": args.hub_url,
+                "api_key": args.api_key,
+                "sensor_id": args.sensor_id,
+            }
+            values.update({key: value for key, value in overrides.items() if value is not None})
+            agent = EdgeAgent(EdgeAgentConfig(**values))
+            if args.dry_run:
+                from rocks.simulator.generator import Scenario, generate_records
+
+                with tempfile.TemporaryDirectory(prefix="rocks-edge-dry-run-") as directory:
+                    isolated_values = dict(values)
+                    isolated_values["database_path"] = Path(directory) / "telemetry.db"
+                    isolated_values["buffer_path"] = Path(directory) / "buffer.db"
+                    isolated_agent = EdgeAgent(EdgeAgentConfig(**isolated_values))
+                    isolated_agent.run_dry_run(generate_records(Scenario.NORMAL, count=2, sensor_id=isolated_agent.config.sensor_id))
+                    print(f"ROCKS Edge dry-run passed: {isolated_agent.telemetry_generated} synthetic records")
+                return 0
+            try:
+                install_signal_handlers(agent)
+                agent.run()
+            except (ValueError, CaptureError) as exc:
+                print(f"ROCKS Edge startup error: {exc}", file=sys.stderr)
+                return 2
+            return 0
+        if args.edge_command == "test-hub":
+            agent = EdgeAgent(EdgeAgentConfig(**get_edge_agent_config()))
+            reachable = agent.hub_health()
+            print(f"Hub reachable: {'yes' if reachable else 'no'}")
+            return 0 if reachable else 2
         if args.edge_command == "telemetry" and args.telemetry_command == "test":
             with tempfile.TemporaryDirectory(prefix="rocks-telemetry-") as directory:
                 storage = TelemetryStorage(Path(directory) / "telemetry.db")
@@ -207,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.edge_command == "storage" and args.storage_command == "status":
             print("ROCKS Edge local storage is available.")
-            print("Hub transmission is not implemented yet.")
+            print("Hub transmission uses the local buffer and configured Edge sender.")
             return 0
         if args.edge_command in {"telemetry", "storage"}:
             parser.parse_args(["edge", args.edge_command, "--help"])

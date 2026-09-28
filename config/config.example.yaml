@@ -6,9 +6,13 @@ deployment:
   mode: all-in-one
 
 edge:
+  enabled: true
   sensor_id: ROCKS-EDGE-01
   interface: ""
   capture_mode: live
+  hub_url: ""
+  send_interval_seconds: 5
+  buffer_limit: 10000
 
 hub:
   enabled: false

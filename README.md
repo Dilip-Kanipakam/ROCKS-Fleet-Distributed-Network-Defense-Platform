@@ -82,6 +82,10 @@ The demo creates 20 historical baseline records in a temporary SQLite database, 
 
 Optional scenario generation is available with `rocks simulate normal`, `rocks simulate anomaly`, and `rocks simulate mixed`. Dashboard alerts are investigation-only. Email is disabled and not implemented in this MVP.
 
+## Live Edge
+
+Run the operational Edge agent with `rocks edge run --interface <interface> --hub-url <url> --api-key <key> --sensor-id <id>`. Use `rocks edge run --dry-run` for a safe local check. A managed switch must be configured to mirror selected ports or VLAN traffic to the Edge through a SPAN destination port; an ordinary switch connection does not expose all traffic.
+
 ## Python virtual environment
 
 Create a virtual environment from the project root:
