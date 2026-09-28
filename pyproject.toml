@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rocks-fleet"
+version = "0.1.0"
+description = "ROCKS Fleet foundation project"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "ROCKS Fleet contributors" }]
+license = { text = "MIT" }
+keywords = ["security", "network", "monitoring", "telemetry"]
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+rocks = "rocks.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,2 @@
+# Minimal runtime dependencies for the ROCKS Fleet foundation.
+# No packet capture, ML, or dashboard frameworks are included yet.

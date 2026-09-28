@@ -1,0 +1,28 @@
+project:
+  name: ROCKS Fleet
+  version: 0.1.0
+
+deployment:
+  mode: all-in-one
+
+edge:
+  sensor_id: ROCKS-EDGE-01
+  interface: ""
+  capture_mode: live
+
+hub:
+  enabled: true
+  url: ""
+  api_key: ""
+
+telemetry:
+  interval_seconds: 60
+
+storage:
+  database: ""
+
+ml:
+  enabled: false
+
+alerts:
+  enabled: false
