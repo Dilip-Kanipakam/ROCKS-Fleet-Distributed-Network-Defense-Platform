@@ -11,7 +11,7 @@ from typing import Any
 
 from rocks.edge.buffer import TelemetryBuffer
 from rocks.edge.capture import PacketCapture
-from rocks.edge.features import FeatureAggregator, aggregate_features
+from rocks.edge.features import FeatureAggregator, aggregate_features_by_source
 from rocks.edge.flow import FlowTracker
 from rocks.edge.parser import PacketMetadata, parse_packet
 from rocks.edge.sender import EdgeSender, SendResult
@@ -66,25 +66,31 @@ class EdgeAgent:
         except Exception:
             self.logger.exception("Edge packet metadata processing failed")
 
-    def flush_features(self) -> TelemetryRecord | None:
+    def flush_features(self) -> list[TelemetryRecord]:
         with self._lock:
             if not self._packets:
-                return None
+                return []
             packets = list(self._packets)
             self._packets.clear()
             flows = self.flow_tracker.snapshot()
-        features = aggregate_features(packets, flows, window_seconds=self.config.telemetry_window_seconds)
-        record = behavior_summary_telemetry(
-            features,
-            self.config.sensor_id,
-            device_id=features.device_id,
+        records: list[TelemetryRecord] = []
+        for features in aggregate_features_by_source(
+            packets,
+            flows,
             window_seconds=self.config.telemetry_window_seconds,
-        )
-        self.storage.insert_telemetry(record)
-        self.buffer.add(record)
-        self.telemetry_generated += 1
-        self.logger.info("EDGE_TELEMETRY_GENERATED sensor_id=%s", self.config.sensor_id)
-        return record
+        ):
+            record = behavior_summary_telemetry(
+                features,
+                self.config.sensor_id,
+                device_id=features.device_id,
+                window_seconds=self.config.telemetry_window_seconds,
+            )
+            self.storage.insert_telemetry(record)
+            self.buffer.add(record)
+            self.telemetry_generated += 1
+            self.logger.info("EDGE_TELEMETRY_GENERATED sensor_id=%s", self.config.sensor_id)
+            records.append(record)
+        return records
 
     def send_pending(self) -> SendResult:
         if self.sender is None:

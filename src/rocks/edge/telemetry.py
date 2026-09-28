@@ -179,12 +179,22 @@ def behavior_summary_telemetry(
     *,
     device_id: str | None = None,
     window_seconds: float = 60.0,
-    repeated_destination_count: int = 0,
+    repeated_destination_count: int | None = None,
     dns_failure_count: int = 0,
     reconnect_count: int = 0,
     connection_failure_count: int = 0,
     timestamp: datetime | None = None,
 ) -> TelemetryRecord:
+    """Build a schema 1.0 BEHAVIOR_SUMMARY record from window features.
+
+    ``bytes_sent`` is traffic from the summarized source toward destinations.
+    ``bytes_received`` is traffic from destinations toward the summarized source.
+    ``dns_request_count`` is the count of DNS-related packets in the window, not
+    a parsed DNS opcode. ``dns_failure_count``, ``reconnect_count``, and
+    ``connection_failure_count`` stay at the supplied defaults unless the caller
+    observed those events; the live Edge path does not invent them.
+    """
+
     payload = {
         "window_seconds": window_seconds,
         "packet_count": features.packet_count,
@@ -195,7 +205,9 @@ def behavior_summary_telemetry(
         "connection_count": features.connection_count,
         "active_connections": features.active_flow_count,
         "unique_destination_ip_count": features.unique_destination_ip_count,
-        "repeated_destination_count": repeated_destination_count,
+        "repeated_destination_count": (
+            features.repeated_destination_count if repeated_destination_count is None else repeated_destination_count
+        ),
         "dns_request_count": features.dns_packet_count,
         "dns_failure_count": dns_failure_count,
         "reconnect_count": reconnect_count,

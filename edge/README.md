@@ -44,6 +44,8 @@ Deploy and operate Edge only on networks and systems where monitoring is authori
 
 ## Live Edge agent
 
+Live `BEHAVIOR_SUMMARY` records use the same schema 1.0 envelope as synthetic telemetry. `bytes_sent` is traffic from the summarized source IP toward destinations. `bytes_received` is traffic from destinations toward that source. The live agent passes source identity into feature aggregation and emits one summary per observed source IP so byte counters are not mixed across devices. DNS failure, reconnect, and connection-failure counters stay at 0 unless those events are separately observed; they are not inferred from packet payloads.
+
 The operational agent connects the existing capture, parser, flow, feature, telemetry, local SQLite, persistent buffer, and Hub sender components:
 
 ```text

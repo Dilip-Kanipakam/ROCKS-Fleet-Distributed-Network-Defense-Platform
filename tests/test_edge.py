@@ -124,8 +124,9 @@ def test_feature_aggregation_and_rates():
     assert features.bytes_received == packets[1].packet_length
     assert features.connection_count == 3
     assert features.active_flow_count == 3
-    assert features.unique_destination_ip_count == 3
-    assert features.unique_destination_port_count == 2
+    assert features.unique_destination_ip_count == 2
+    assert features.unique_destination_port_count == 1
+    assert features.repeated_destination_count == 0
     assert features.unique_source_ip_count == 2
     assert features.tcp_packet_count == 1
     assert features.udp_packet_count == 1
@@ -134,6 +135,7 @@ def test_feature_aggregation_and_rates():
     assert features.packet_rate == 3 / 60
     assert features.traffic_rate == features.total_bytes / 60
     assert features.device_id == "192.0.2.1|02:00:00:00:00:01"
+    assert features.total_bytes == features.bytes_sent + features.bytes_received
 
 
 def test_feature_aggregator_window():

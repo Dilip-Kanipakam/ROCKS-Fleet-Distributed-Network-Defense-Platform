@@ -70,3 +70,16 @@ Chunk 6 adds the administrator-facing Command Center. It uses signed sessions, b
 Chunk 7 completes the local MVP integration with deterministic synthetic telemetry scenarios and a lightweight alert engine. Alerts are generated from existing ML analysis results when anomaly or retention thresholds are crossed, stored in the existing Hub database, and exposed through the read-only dashboard. They are investigation signals, not attack classifications.
 
 The live Edge agent in Chunk 8 composes the existing Edge modules into one process. It captures metadata from an authorized interface, creates bounded feature summaries, persists telemetry locally, buffers it durably, and sends acknowledged records to the Hub. The Hub is optional at runtime; local buffering remains the reliability boundary.
+
+## BEHAVIOR_SUMMARY byte semantics
+
+Live and synthetic `BEHAVIOR_SUMMARY` records share schema version `1.0`. Directional counters are relative to the summarized source IP / `device_id`:
+
+- `bytes_sent`: observed packet lengths whose IPv4 source is the summarized source (traffic from that source toward destinations).
+- `bytes_received`: observed packet lengths whose IPv4 destination is the summarized source (traffic from destinations toward that source).
+
+Direction is derived from source and destination IP, not packet order. The live agent emits one summary per observed source IP in the window so multiple devices are not mixed into one set of byte counters. Return traffic in the same window is counted as `bytes_received` for that source.
+
+`dns_request_count` is the number of DNS-related packets in the scoped window. `dns_failure_count`, `reconnect_count`, and `connection_failure_count` remain 0 on the live path unless a caller supplies observed values; the parser does not invent DNS failures or reconnects from payload contents.
+
+ML continues to use `actual_traffic = bytes_sent + bytes_received` on these fields.

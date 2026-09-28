@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, asdict
 from typing import Any, Iterable
 
@@ -27,9 +28,30 @@ class TrafficFeatures:
     traffic_rate: float
     packet_rate: float
     device_id: str | None = None
+    repeated_destination_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def source_identities(packets: Iterable[PacketMetadata]) -> list[tuple[str, str | None]]:
+    """Return unique IPv4 sources and a matching MAC when it is unambiguous."""
+
+    macs_by_ip: dict[str, set[str]] = {}
+    order: list[str] = []
+    for packet in packets:
+        if packet.source_ip is None:
+            continue
+        if packet.source_ip not in macs_by_ip:
+            macs_by_ip[packet.source_ip] = set()
+            order.append(packet.source_ip)
+        if packet.source_mac:
+            macs_by_ip[packet.source_ip].add(packet.source_mac)
+    identities: list[tuple[str, str | None]] = []
+    for source_ip in order:
+        macs = macs_by_ip[source_ip]
+        identities.append((source_ip, next(iter(macs)) if len(macs) == 1 else None))
+    return identities
 
 
 def aggregate_features(
@@ -42,14 +64,32 @@ def aggregate_features(
     source_ip: str | None = None,
     source_mac: str | None = None,
 ) -> TrafficFeatures:
-    """Aggregate metadata into one configurable time-window feature record."""
+    """Aggregate metadata into one configurable time-window feature record.
+
+    When ``source_ip`` is set, the record describes that endpoint:
+
+    - ``bytes_sent``: observed packet lengths where this IP is the IPv4 source
+      (traffic from the summarized source toward destinations).
+    - ``bytes_received``: observed packet lengths where this IP is the IPv4
+      destination (traffic from destinations toward the summarized source).
+
+    Direction is taken only from source/destination IP, never from packet order.
+    When ``source_ip`` is omitted, directional byte counters stay 0.
+    """
 
     packet_list = list(packets)
     flow_list = list(flows)
     if window_seconds <= 0:
         raise ValueError("window_seconds must be greater than zero")
 
-    if packet_list:
+    scoped_packets = _packets_for_source(packet_list, source_ip)
+    scoped_flows = _flows_for_source(flow_list, source_ip)
+    outbound = [packet for packet in scoped_packets if source_ip is None or packet.source_ip == source_ip]
+
+    if scoped_packets:
+        start = min(packet.timestamp for packet in scoped_packets) if window_start is None else window_start
+        end = max(packet.timestamp for packet in scoped_packets) if window_end is None else window_end
+    elif packet_list:
         start = min(packet.timestamp for packet in packet_list) if window_start is None else window_start
         end = max(packet.timestamp for packet in packet_list) if window_end is None else window_end
     else:
@@ -57,42 +97,76 @@ def aggregate_features(
         end = window_end if window_end is not None else start + window_seconds
 
     duration = max(window_seconds, end - start)
-    total_bytes = sum(packet.packet_length for packet in packet_list)
-    sent = sum(
-        packet.packet_length
-        for packet in packet_list
-        if source_ip is not None and packet.source_ip == source_ip
-    )
+    total_bytes = sum(packet.packet_length for packet in scoped_packets)
+    sent = sum(packet.packet_length for packet in scoped_packets if source_ip is not None and packet.source_ip == source_ip)
     received = sum(
         packet.packet_length
-        for packet in packet_list
-        if source_ip is not None and packet.destination_ip == source_ip
+        for packet in scoped_packets
+        if source_ip is not None and packet.destination_ip == source_ip and packet.source_ip != source_ip
     )
-    source_macs = {packet.source_mac for packet in packet_list if packet.source_mac}
+    source_macs = {packet.source_mac for packet in outbound if packet.source_mac}
     device_id = None
     if source_ip:
-        device_id = f"{source_ip}|{source_mac or (next(iter(source_macs)) if len(source_macs) == 1 else '')}"
+        chosen_mac = source_mac or (next(iter(source_macs)) if len(source_macs) == 1 else "")
+        device_id = f"{source_ip}|{chosen_mac}"
+
+    destination_ips = [packet.destination_ip for packet in outbound if packet.destination_ip]
+    destination_counts = Counter(destination_ips)
 
     return TrafficFeatures(
         window_start=start,
         window_end=end,
-        packet_count=len(packet_list),
+        packet_count=len(scoped_packets),
         total_bytes=total_bytes,
         bytes_sent=sent,
         bytes_received=received,
-        connection_count=len(flow_list),
-        active_flow_count=len(flow_list),
-        unique_destination_ip_count=len({p.destination_ip for p in packet_list if p.destination_ip}),
-        unique_destination_port_count=len({p.destination_port for p in packet_list if p.destination_port is not None}),
-        unique_source_ip_count=len({p.source_ip for p in packet_list if p.source_ip}),
-        tcp_packet_count=sum(p.protocol == "TCP" for p in packet_list),
-        udp_packet_count=sum(p.protocol == "UDP" for p in packet_list),
-        icmp_packet_count=sum(p.protocol == "ICMP" for p in packet_list),
-        dns_packet_count=sum(p.dns_related for p in packet_list),
+        connection_count=len(scoped_flows),
+        active_flow_count=len(scoped_flows),
+        unique_destination_ip_count=len(set(destination_ips)),
+        unique_destination_port_count=len(
+            {packet.destination_port for packet in outbound if packet.destination_port is not None}
+        ),
+        unique_source_ip_count=len({packet.source_ip for packet in scoped_packets if packet.source_ip}),
+        tcp_packet_count=sum(packet.protocol == "TCP" for packet in scoped_packets),
+        udp_packet_count=sum(packet.protocol == "UDP" for packet in scoped_packets),
+        icmp_packet_count=sum(packet.protocol == "ICMP" for packet in scoped_packets),
+        dns_packet_count=sum(packet.dns_related for packet in scoped_packets),
         traffic_rate=total_bytes / duration,
-        packet_rate=len(packet_list) / duration,
+        packet_rate=len(scoped_packets) / duration,
         device_id=device_id,
+        repeated_destination_count=sum(1 for count in destination_counts.values() if count > 1),
     )
+
+
+def aggregate_features_by_source(
+    packets: Iterable[PacketMetadata],
+    flows: Iterable[FlowRecord] = (),
+    **kwargs: Any,
+) -> list[TrafficFeatures]:
+    """Build one feature record per observed IPv4 source in the window."""
+
+    packet_list = list(packets)
+    flow_list = list(flows)
+    return [
+        aggregate_features(packet_list, flow_list, source_ip=source_ip, source_mac=source_mac, **kwargs)
+        for source_ip, source_mac in source_identities(packet_list)
+    ]
+
+
+def _packets_for_source(packets: list[PacketMetadata], source_ip: str | None) -> list[PacketMetadata]:
+    if source_ip is None:
+        return packets
+    return [
+        packet
+        for packet in packets
+        if packet.source_ip == source_ip or packet.destination_ip == source_ip
+    ]
+
+
+def _flows_for_source(flows: list[FlowRecord], source_ip: str | None) -> list[FlowRecord]:
+    if source_ip is None:
+        return flows
+    return [flow for flow in flows if flow.source_ip == source_ip or flow.destination_ip == source_ip]
 
 
 class FeatureAggregator:
