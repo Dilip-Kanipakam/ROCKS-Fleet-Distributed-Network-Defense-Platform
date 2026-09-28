@@ -11,9 +11,10 @@ edge:
   capture_mode: live
 
 hub:
-  enabled: true
+  enabled: false
   url: ""
   api_key: ""
+  timeout_seconds: 10
 
 telemetry:
   interval_seconds: 60
@@ -22,6 +23,7 @@ telemetry:
 storage:
   database: ""
   buffer: ""
+  hub_database: ""
 
 ml:
   enabled: false

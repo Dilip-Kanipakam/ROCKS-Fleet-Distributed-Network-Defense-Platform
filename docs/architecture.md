@@ -48,4 +48,8 @@ The project is designed to scale from a single Linux all-in-one deployment to a 
 
 Chunk 3 now converts Edge flow and feature records into versioned metadata-only telemetry, persists it in local SQLite storage, and provides a persistent local offline buffer. The current Edge stores telemetry locally. Transmission to the ROCKS Hub is planned for the next server/Hub integration stage.
 
-Packet capture and parsing are implemented in the Edge observation layer, while ML, Hub services, and the Command Center are intentionally not implemented yet.
+Packet capture and parsing are implemented in the Edge observation layer, while ML and the Command Center are intentionally not implemented yet.
+
+Chunk 4 adds the ROCKS Hub API as the central ingestion boundary. It validates the existing telemetry schema, authenticates registered Edge sensors with hashed API keys, stores records in a dedicated indexed SQLite database, and provides health, query, registry, and statistics endpoints. The Edge sender uses the existing local buffer and removes records only after acknowledgement.
+
+The Hub does not perform packet capture. ML, anomaly scoring, retention decisions, and the Command Center remain future layers.

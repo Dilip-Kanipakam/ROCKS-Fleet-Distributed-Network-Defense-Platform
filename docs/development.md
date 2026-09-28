@@ -28,10 +28,11 @@ The project is intentionally planned in chunks so the architecture remains coher
 
 ## Chunk 4: ROCKS Hub
 
-- telemetry ingestion
-- central data storage
-- detection orchestration
-- service exposure for the dashboard
+- FastAPI telemetry ingestion
+- central SQLite storage
+- Edge API-key authentication and registry
+- health, query, and statistics endpoints
+- bounded Edge sender using the local buffer
 
 ## Chunk 5: ML baseline, anomaly scoring, and retention scoring
 

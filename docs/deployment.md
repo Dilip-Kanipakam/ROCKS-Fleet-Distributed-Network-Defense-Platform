@@ -25,9 +25,14 @@ The eventual system is intended to support distributed deployments where:
 
 This is the intended architecture for larger environments and multiple network segments.
 
+## Chunk 4 Hub communication
+
+The Hub can run on the same Linux machine as Edge at `http://127.0.0.1:8000`, or on a separate self-hosted machine such as `http://ROCKS-HUB-IP:8000`. Edge API keys authenticate telemetry uploads, while the Edge SQLite buffer preserves records when the Hub is unavailable.
+
 ## Important constraints
 
 - The project must support managed switch SPAN or port mirroring
 - Network observation must not assume that attaching a machine directly to a switch provides every packet
 - The system remains metadata-first and does not store payloads
 - Detection remains informational and never automatically blocks or attacks devices
+- The Hub, API, central SQLite storage, and Edge sender are implemented in Chunk 4; the Command Center remains future work

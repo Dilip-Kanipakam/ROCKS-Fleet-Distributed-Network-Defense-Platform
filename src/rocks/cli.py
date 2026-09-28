@@ -13,6 +13,10 @@ from rocks.edge.flow import FlowTracker
 from rocks.edge.parser import parse_packet
 from rocks.edge.storage import TelemetryStorage
 from rocks.edge.telemetry import behavior_summary_telemetry
+from rocks.hub.app import create_app
+from rocks.hub.config import get_hub_config
+from rocks.hub.registry import EdgeRegistry
+from rocks.hub.storage import HubStorage
 from rocks.logging_config import configure_logging
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.l2 import Ether
@@ -52,6 +56,18 @@ def build_parser() -> argparse.ArgumentParser:
     storage_parser = edge_subparsers.add_parser("storage", help="local Edge storage commands")
     storage_subparsers = storage_parser.add_subparsers(dest="storage_command")
     storage_subparsers.add_parser("status", help="show local telemetry storage status")
+    hub_parser = subparsers.add_parser("hub", help="ROCKS Hub commands")
+    hub_subparsers = hub_parser.add_subparsers(dest="hub_command")
+    hub_subparsers.add_parser("status", help="show Hub status")
+    run_parser = hub_subparsers.add_parser("run", help="start the Hub API")
+    run_parser.add_argument("--host", default="127.0.0.1")
+    run_parser.add_argument("--port", type=int, default=8000)
+    hub_edge_parser = hub_subparsers.add_parser("edge", help="manage registered Edge sensors")
+    hub_edge_subparsers = hub_edge_parser.add_subparsers(dest="hub_edge_command")
+    hub_edge_subparsers.add_parser("list", help="list registered Edge sensors")
+    register_parser = hub_edge_subparsers.add_parser("register", help="register an Edge sensor")
+    register_parser.add_argument("--sensor-id", required=True)
+    register_parser.add_argument("--name")
     return parser
 
 
@@ -162,6 +178,37 @@ def main(argv: list[str] | None = None) -> int:
             parser.parse_args(["edge", args.edge_command, "--help"])
             return 0
         parser.parse_args(["edge", "--help"])
+        return 0
+
+    if args.command == "hub":
+        config = get_hub_config()
+        storage = HubStorage(config.database_path)
+        registry = EdgeRegistry(storage)
+        if args.hub_command == "status":
+            print(f"ROCKS Hub database: {config.database_path}")
+            print(f"Registered Edge sensors: {len(registry.list())}")
+            print(f"Telemetry records: {storage.count()}")
+            print("HTTP server configured: yes")
+            print("HTTP server running: no")
+            return 0
+        if args.hub_command == "run":
+            import uvicorn
+
+            uvicorn.run(create_app(str(config.database_path)), host=args.host, port=args.port)
+            return 0
+        if args.hub_command == "edge":
+            if args.hub_edge_command == "list":
+                for edge in registry.list():
+                    print(f"{edge.sensor_id}\t{edge.status}\t{edge.last_seen or 'never'}")
+                return 0
+            if args.hub_edge_command == "register":
+                edge, api_key = registry.register(args.sensor_id, args.name)
+                print(f"Sensor ID: {edge.sensor_id}")
+                print(f"API key: {api_key}")
+                return 0
+            parser.parse_args(["hub", "edge", "--help"])
+            return 0
+        parser.parse_args(["hub", "--help"])
         return 0
 
     print(f"ROCKS Fleet {__version__}")

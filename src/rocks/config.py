@@ -54,3 +54,11 @@ def get_buffer_path(config_path: str | Path | None = None) -> Path:
     if configured_path:
         return Path(configured_path).expanduser()
     return Path(__file__).resolve().parents[2] / "data" / "rocks-edge-buffer.db"
+
+
+def get_hub_path(config_path: str | Path | None = None) -> Path:
+    config = load_config(config_path)
+    configured_path = config.get("storage", {}).get("hub_database")
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return Path(__file__).resolve().parents[2] / "data" / "rocks-hub.db"

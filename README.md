@@ -63,9 +63,10 @@ This repository currently contains the ROCKS Fleet foundation and first Edge obs
 - non-root synthetic Edge pipeline demonstration
 - versioned telemetry records with connection, DNS, reconnect, and behavior-summary events
 - SQLite local telemetry storage and a persistent offline buffer
+- central ROCKS Hub ingestion API with authenticated Edge registration
 - documentation and test baseline
 
-Chunk 1 established the project foundation. Chunk 2 added the Edge observation layer. Chunk 3 adds local structured telemetry, SQLite storage, and an offline buffer. Transmission to the ROCKS Hub, the Hub itself, the dashboard, and ML features remain intentionally unimplemented.
+Chunk 1 established the project foundation. Chunk 2 added the Edge observation layer. Chunk 3 added local structured telemetry, SQLite storage, and an offline buffer. Chunk 4 adds the central Hub ingestion API and Edge sender. ML, the dashboard, and automatic response remain intentionally unimplemented.
 
 ## Python virtual environment
 

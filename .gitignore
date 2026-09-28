@@ -10,3 +10,4 @@ __pycache__/
 htmlcov/
 .DS_Store
 *.log
+data/
