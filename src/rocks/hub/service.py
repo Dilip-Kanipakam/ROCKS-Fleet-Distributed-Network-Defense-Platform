@@ -10,6 +10,8 @@ from rocks.hub.storage import HubStorage
 from rocks.logging_config import configure_logging
 from rocks.ml.config import get_ml_config
 from rocks.ml.service import MLService
+from rocks.alerts.engine import AlertEngine
+from rocks.alerts.config import get_alert_config
 
 
 class HubService:
@@ -25,6 +27,11 @@ class HubService:
             ml_config.model_version,
         ) if ml_config.enabled else None
         self._logger = configure_logging()
+        alert_config = get_alert_config()
+        self.alerts = AlertEngine(
+            anomaly_threshold=alert_config.anomaly_threshold,
+            high_retention_threshold=alert_config.high_retention_threshold,
+        ) if alert_config.enabled else None
 
     def health(self) -> dict[str, Any]:
         self.storage.initialize()
@@ -59,9 +66,14 @@ class HubService:
         self.registry.touch(record.sensor_id)
         if self.ml is not None:
             try:
-                self.ml.analyze_and_store(record)
+                analysis = self.ml.analyze_and_store(record)
+                if analysis is not None:
+                    if self.alerts is not None:
+                        alert = self.alerts.create_alert(analysis)
+                        if alert is not None:
+                            self.storage.insert_alert(alert)
             except Exception:
-                self._logger.exception("ML analysis failed for telemetry %s", record.record_id)
+                self._logger.exception("Optional analysis or alerting failed for telemetry %s", record.record_id)
         return inserted
 
     def edges(self) -> list[EdgeInfo]:

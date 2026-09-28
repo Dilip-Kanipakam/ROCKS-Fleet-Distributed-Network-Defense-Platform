@@ -65,9 +65,22 @@ This repository currently contains the ROCKS Fleet foundation and first Edge obs
 - SQLite local telemetry storage and a persistent offline buffer
 - central ROCKS Hub ingestion API with authenticated Edge registration
 - local Hub-side time-aware baseline learning and retention prioritization
+- safe synthetic simulator and local investigation alerts
 - documentation and test baseline
 
-Chunk 1 established the project foundation. Chunk 2 added the Edge observation layer. Chunk 3 added local structured telemetry, SQLite storage, and an offline buffer. Chunk 4 added the central Hub ingestion API and Edge sender. Chunk 5 adds local baseline learning, anomaly scoring, and retention prioritization. Chunk 6 adds the read-only Command Center. The simulator and automatic response remain intentionally unimplemented.
+Chunks 1 through 6 provide the Edge, telemetry, Hub, ML, and read-only Command Center layers. Chunk 7 integrates safe synthetic scenarios, local investigation alerts, and an end-to-end MVP demonstration. Automatic response remains intentionally unimplemented.
+
+## Quick Demo
+
+The simulator generates telemetry only; it never sends packets, scans networks, or performs attacks.
+
+```bash
+rocks demo
+```
+
+The demo creates 20 historical baseline records in a temporary SQLite database, trains the local model, compares normal traffic with a synthetic high-traffic spike, and creates a HIGH investigation alert. ML needs historical baseline data before it becomes ready. An anomaly indicates behavior that differs from the learned baseline; it does not prove an attack.
+
+Optional scenario generation is available with `rocks simulate normal`, `rocks simulate anomaly`, and `rocks simulate mixed`. Dashboard alerts are investigation-only. Email is disabled and not implemented in this MVP.
 
 ## Python virtual environment
 

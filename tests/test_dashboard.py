@@ -102,3 +102,22 @@ def test_ready_ml_summary_state(tmp_path, monkeypatch):
     data = client.get("/api/v1/dashboard/summary").json()
     assert data["ml"]["status"] == "READY"
     assert data["ml"]["training_samples"] == 25
+
+
+def test_alerts_api_returns_investigation_alerts(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    service = client.app.state.hub_service
+    record = behavior_summary_telemetry(
+        TrafficFeatures(0, 60, 1, 10000, 5000, 5000, 1, 1, 1, 1, 1, 1, 0, 0, 0, 166.0, 0.1),
+        "EDGE-ALERT",
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    service.storage.insert_telemetry(record)
+    analysis = analyze_behavior_summary(record, expected_traffic=1000, baseline_status="READY", analyzed_at="2026-01-01T00:00:00Z")
+    alert = service.alerts.create_alert(analysis)
+    assert alert is not None
+    service.storage.insert_alert(alert)
+    response = client.get("/api/v1/dashboard/alerts")
+    assert response.status_code == 200
+    assert response.json()[0]["alert_type"] == "POTENTIAL_ANOMALY"

@@ -49,11 +49,12 @@ The project is intentionally planned in chunks so the architecture remains coher
 - Edge, telemetry, event, traffic, storage, and ML status views
 - bounded JSON polling for live refresh
 
-## Chunk 7: Safe traffic/anomaly simulator
+## Chunk 7: MVP integration, safe simulator, and alerting
 
-- controlled simulated traffic generation
-- evaluation of detection workflows
-- safe testing without live network risk
+- controlled synthetic telemetry generation
+- deterministic end-to-end demonstration
+- local investigation alert persistence and dashboard display
+- no attack traffic, automatic blocking, or email by default
 
 ## Chunk 8: Integration, deployment, testing, and hardening
 

@@ -27,11 +27,13 @@ class DashboardRoutes:
         router.add_api_route("/dashboard/edges", self.edges_page, methods=["GET"])
         router.add_api_route("/dashboard/telemetry", self.telemetry_page, methods=["GET"])
         router.add_api_route("/dashboard/events", self.events_page, methods=["GET"])
+        router.add_api_route("/dashboard/alerts", self.alerts_page, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/summary", self.summary_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/edges", self.edges_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/telemetry", self.telemetry_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/events", self.events_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/traffic", self.traffic_api, methods=["GET"])
+        router.add_api_route("/api/v1/dashboard/alerts", self.alerts_api, methods=["GET"])
         return router
 
     def _page_auth(self, request: Request) -> RedirectResponse | None:
@@ -85,6 +87,12 @@ class DashboardRoutes:
             return redirect
         return self.templates.TemplateResponse(request=request, name="events.html", context={"events": self.service.events()})
 
+    def alerts_page(self, request: Request):
+        redirect = self._page_auth(request)
+        if redirect:
+            return redirect
+        return self.templates.TemplateResponse(request=request, name="alerts.html", context={"alerts": self.service.alerts()})
+
     def summary_api(self, request: Request):
         self._api_auth(request)
         return JSONResponse(self.service.summary())
@@ -104,3 +112,7 @@ class DashboardRoutes:
     def traffic_api(self, request: Request, limit: int = Query(20, ge=1, le=100)):
         self._api_auth(request)
         return JSONResponse(self.service.traffic(limit))
+
+    def alerts_api(self, request: Request, limit: int = Query(50, ge=1, le=100)):
+        self._api_auth(request)
+        return JSONResponse(self.service.alerts(limit))

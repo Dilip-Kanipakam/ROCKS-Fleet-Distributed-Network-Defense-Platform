@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
+from rocks.alerts.engine import Alert
 from rocks.hub.models import EdgeInfo
 from rocks.ml.analysis import AnalysisResult
 
@@ -59,6 +60,24 @@ class HubStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_analysis_anomaly_score ON telemetry_analysis(anomaly_score);
                 CREATE INDEX IF NOT EXISTS idx_analysis_retention_priority ON telemetry_analysis(retention_priority);
+                CREATE TABLE IF NOT EXISTS alerts (
+                    alert_id TEXT PRIMARY KEY,
+                    telemetry_id TEXT NOT NULL,
+                    sensor_id TEXT NOT NULL,
+                    device_id TEXT,
+                    timestamp TEXT NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    anomaly_score REAL,
+                    retention_score REAL,
+                    message TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (telemetry_id, alert_type)
+                );
+                CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
+                CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
                 """
             )
 
@@ -305,6 +324,40 @@ class HubStorage:
             retention_priority=row[8],
             analyzed_at=row[9],
         )
+
+    def insert_alert(self, alert: Alert) -> bool:
+        self.initialize()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO alerts
+                (alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type,
+                 severity, anomaly_score, retention_score, message, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (alert.alert_id, alert.telemetry_id, alert.sensor_id, alert.device_id,
+                 alert.timestamp, alert.alert_type, alert.severity, alert.anomaly_score,
+                 alert.retention_score, alert.message, alert.status, _utc_now()),
+            )
+        return cursor.rowcount == 1
+
+    def recent_alerts(self, limit: int = 50) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status FROM alerts ORDER BY timestamp DESC LIMIT ?",
+                (min(max(limit, 1), 100),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def alert_counts(self) -> dict[str, int]:
+        self.initialize()
+        with self._connect() as connection:
+            total = connection.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+            high = connection.execute("SELECT COUNT(*) FROM alerts WHERE severity = 'HIGH'").fetchone()[0]
+            warning = connection.execute("SELECT COUNT(*) FROM alerts WHERE severity = 'WARNING'").fetchone()[0]
+            open_count = connection.execute("SELECT COUNT(*) FROM alerts WHERE status = 'OPEN'").fetchone()[0]
+        return {"total_recent": int(total), "high": int(high), "warning": int(warning), "open": int(open_count)}
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)

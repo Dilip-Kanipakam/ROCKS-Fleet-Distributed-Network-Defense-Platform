@@ -6,4 +6,4 @@ Routes include `/dashboard/login`, `/dashboard`, `/dashboard/edges`, `/dashboard
 
 Dashboard access uses a separate signed session cookie and administrator credentials configured through environment variables. It never reuses Edge API keys, exposes credentials, or performs network enforcement.
 
-The interface reports Hub health, Edge status, metadata-only telemetry, ML baseline state, potential anomalies, retention priorities, and bounded traffic history. It is strictly read-only and does not block, disconnect, scan, or modify network devices.
+The interface reports Hub health, Edge status, metadata-only telemetry, ML baseline state, potential anomalies, retention priorities, bounded traffic history, and local investigation alerts. It is strictly read-only and does not block, disconnect, scan, or modify network devices.

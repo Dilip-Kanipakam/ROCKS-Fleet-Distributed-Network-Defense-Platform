@@ -19,9 +19,12 @@ from rocks.hub.registry import EdgeRegistry
 from rocks.hub.storage import HubStorage
 from rocks.logging_config import configure_logging
 from rocks.ml.config import get_ml_config
-from rocks.ml.demo import run_demo
+from rocks.ml.demo import run_demo as run_ml_demo
 from rocks.ml.service import MLService
 from rocks.dashboard.config import get_dashboard_config
+from rocks.demo import run_demo as run_mvp_demo
+from rocks.alerts.config import get_alert_config
+from rocks.simulator.generator import Scenario, generate_records
 
 
 from scapy.layers.inet import IP, TCP, UDP
@@ -87,6 +90,19 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_run = dashboard_subparsers.add_parser("run", help="start the Hub with the dashboard")
     dashboard_run.add_argument("--host", default=None)
     dashboard_run.add_argument("--port", type=int, default=None)
+    simulate_parser = subparsers.add_parser("simulate", help="generate safe synthetic telemetry")
+    simulate_subparsers = simulate_parser.add_subparsers(dest="simulate_command")
+    for name in ("normal", "anomaly", "mixed"):
+        scenario_parser = simulate_subparsers.add_parser(name, help=f"generate {name} synthetic telemetry")
+        scenario_parser.add_argument("--count", type=int, default=1)
+        scenario_parser.add_argument("--interval", type=float, default=0.0)
+        scenario_parser.add_argument("--sensor-id", default="ROCKS-SIM-01")
+    alerts_parser = subparsers.add_parser("alerts", help="local investigation alert commands")
+    alerts_subparsers = alerts_parser.add_subparsers(dest="alerts_command")
+    alerts_subparsers.add_parser("status", help="show alert engine status")
+    alerts_subparsers.add_parser("list", help="list recent alerts")
+    demo_parser = subparsers.add_parser("demo", help="run the complete safe MVP demonstration")
+    demo_parser.set_defaults(demo_command=True)
     return parser
 
 
@@ -234,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         config = get_ml_config()
         if args.ml_command == "test":
             with tempfile.TemporaryDirectory(prefix="rocks-ml-") as directory:
-                normal_score, spike_score = run_demo(Path(directory) / "baseline.joblib")
+                normal_score, spike_score = run_ml_demo(Path(directory) / "baseline.joblib")
             print(f"ROCKS ML synthetic test passed: normal={normal_score:.3f}, spike={spike_score:.3f}")
             return 0
         service = MLService(
@@ -289,6 +305,34 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         parser.parse_args(["dashboard", "--help"])
+        return 0
+
+    if args.command == "simulate":
+        scenario = {"normal": Scenario.NORMAL, "anomaly": Scenario.HIGH_TRAFFIC, "mixed": Scenario.MIXED_ANOMALOUS}[args.simulate_command]
+        records = generate_records(scenario, count=args.count, sensor_id=args.sensor_id)
+        simulation = any(record.payload.get("simulation") for record in records)
+        print(f"Generated {len(records)} safe synthetic {scenario.value} telemetry records.")
+        print(f"Simulation only: {simulation}")
+        return 0
+
+    if args.command == "alerts":
+        storage = HubStorage(get_hub_config().database_path)
+        if args.alerts_command == "status":
+            counts = storage.alert_counts()
+            print(f"Alert Engine: {'ENABLED' if get_alert_config().enabled else 'DISABLED'}")
+            print(f"Recent Alerts: {counts['total_recent']}")
+            print(f"Open Alerts: {counts['open']}")
+            return 0
+        if args.alerts_command == "list":
+            for alert in storage.recent_alerts():
+                print(f"{alert['timestamp']}\t{alert['severity']}\t{alert['sensor_id']}\t{alert['message']}")
+            return 0
+        parser.parse_args(["alerts", "--help"])
+        return 0
+
+    if args.command == "demo":
+        result = run_mvp_demo()
+        print(f"ROCKS MVP demo passed: {result}")
         return 0
 
     print(f"ROCKS Fleet {__version__}")

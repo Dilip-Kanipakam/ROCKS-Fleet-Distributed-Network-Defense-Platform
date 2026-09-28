@@ -38,3 +38,5 @@ The Hub can run on the same Linux machine as Edge at `http://127.0.0.1:8000`, or
 - The Hub, API, central SQLite storage, and Edge sender are implemented in Chunk 4; the Command Center is implemented as a read-only Hub-served interface in Chunk 6
 - The Command Center is a read-only Hub-served dashboard; configure administrator credentials through environment variables
 - Dashboard sessions are separate from Edge API-key authentication
+- Synthetic simulator data is local and safe; it does not touch network interfaces
+- Alert email is disabled by default and no automatic response is performed

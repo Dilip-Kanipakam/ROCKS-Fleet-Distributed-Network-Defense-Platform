@@ -38,4 +38,15 @@ dashboard:
   admin_password_hash: ""
 
 alerts:
+  enabled: true
+  anomaly_threshold: 0.70
+  high_retention_threshold: 0.70
+
+email:
   enabled: false
+  smtp_host: ""
+  smtp_port: 587
+  username: ""
+  password: ""
+  from: ""
+  to: ""

@@ -41,6 +41,7 @@ class DashboardService:
                 "high_retention": sum(item["retention_priority"] == "HIGH" for item in analysis),
             },
             "storage": {"connected": True, "telemetry_records": self.storage.count(), "analysis_records": self.storage.analysis_count()},
+            "alerts": self.storage.alert_counts(),
         }
 
     def edges(self) -> list[dict[str, Any]]:
@@ -54,3 +55,6 @@ class DashboardService:
 
     def traffic(self, limit: int = 20) -> list[dict[str, Any]]:
         return self.storage.traffic_points(limit)
+
+    def alerts(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self.storage.recent_alerts(limit)
