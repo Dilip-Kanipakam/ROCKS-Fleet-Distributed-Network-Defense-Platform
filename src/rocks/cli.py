@@ -21,6 +21,9 @@ from rocks.logging_config import configure_logging
 from rocks.ml.config import get_ml_config
 from rocks.ml.demo import run_demo
 from rocks.ml.service import MLService
+from rocks.dashboard.config import get_dashboard_config
+
+
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.l2 import Ether
 from scapy.packet import Packet
@@ -78,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
     ml_subparsers.add_parser("test", help="run the deterministic ML demonstration")
     analyze_parser = ml_subparsers.add_parser("analyze", help="analyze a stored telemetry record")
     analyze_parser.add_argument("telemetry_id")
+    dashboard_parser = subparsers.add_parser("dashboard", help="ROCKS Command Center commands")
+    dashboard_subparsers = dashboard_parser.add_subparsers(dest="dashboard_command")
+    dashboard_subparsers.add_parser("status", help="show dashboard status")
+    dashboard_run = dashboard_subparsers.add_parser("run", help="start the Hub with the dashboard")
+    dashboard_run.add_argument("--host", default=None)
+    dashboard_run.add_argument("--port", type=int, default=None)
     return parser
 
 
@@ -258,6 +267,28 @@ def main(argv: list[str] | None = None) -> int:
             print(result.to_dict() if result else "Only BEHAVIOR_SUMMARY records can be analyzed.")
             return 0
         parser.parse_args(["ml", "--help"])
+        return 0
+
+    if args.command == "dashboard":
+        dashboard_config = get_dashboard_config()
+        if args.dashboard_command == "status":
+            hub_config = get_hub_config()
+            print(f"Dashboard: {'ENABLED' if dashboard_config.enabled else 'DISABLED'}")
+            print(f"Hub: {'configured' if hub_config.database_path else 'not configured'}")
+            print(f"Authentication: {'configured' if dashboard_config.auth.configured else 'not configured'}")
+            print(f"URL: http://{dashboard_config.host}:{dashboard_config.port}/dashboard")
+            return 0
+        if args.dashboard_command == "run":
+            import uvicorn
+
+            hub_config = get_hub_config()
+            uvicorn.run(
+                create_app(str(hub_config.database_path)),
+                host=args.host or dashboard_config.host,
+                port=args.port or dashboard_config.port,
+            )
+            return 0
+        parser.parse_args(["dashboard", "--help"])
         return 0
 
     print(f"ROCKS Fleet {__version__}")

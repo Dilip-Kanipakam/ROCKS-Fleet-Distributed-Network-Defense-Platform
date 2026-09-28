@@ -12,7 +12,7 @@ The eventual system is intended to support an all-in-one deployment in which:
 - detection logic runs locally
 - the dashboard is served from the same system
 
-This model is useful for small deployments, lab environments, or low-cost monitoring setups.
+This model is useful for small deployments, lab environments, or low-cost monitoring setups. The Command Center is available from the same Hub process at `/dashboard`.
 
 ## Distributed deployment
 
@@ -35,4 +35,6 @@ The Hub can run on the same Linux machine as Edge at `http://127.0.0.1:8000`, or
 - Network observation must not assume that attaching a machine directly to a switch provides every packet
 - The system remains metadata-first and does not store payloads
 - Detection remains informational and never automatically blocks or attacks devices
-- The Hub, API, central SQLite storage, and Edge sender are implemented in Chunk 4; the Command Center remains future work
+- The Hub, API, central SQLite storage, and Edge sender are implemented in Chunk 4; the Command Center is implemented as a read-only Hub-served interface in Chunk 6
+- The Command Center is a read-only Hub-served dashboard; configure administrator credentials through environment variables
+- Dashboard sessions are separate from Edge API-key authentication

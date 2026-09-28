@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +143,114 @@ class HubStorage:
         self.initialize()
         with self._connect() as connection:
             return {str(row[0]): int(row[1]) for row in connection.execute("SELECT event_type, COUNT(*) FROM telemetry GROUP BY event_type")}
+
+    def recent_count(self, seconds: int = 300) -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        self.initialize()
+        with self._connect() as connection:
+            return int(connection.execute("SELECT COUNT(*) FROM telemetry WHERE timestamp >= ?", (cutoff,)).fetchone()[0])
+
+    def analysis_count(self) -> int:
+        self.initialize()
+        with self._connect() as connection:
+            return int(connection.execute("SELECT COUNT(*) FROM telemetry_analysis").fetchone()[0])
+
+    def recent_analysis(self, limit: int = 50) -> list[dict[str, Any]]:
+        self.initialize()
+        bounded_limit = min(max(limit, 1), 100)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT a.telemetry_id, t.timestamp, t.sensor_id, t.device_id,
+                       a.actual_traffic, a.expected_traffic, a.anomaly_score,
+                       a.retention_score, a.retention_priority, a.baseline_status
+                FROM telemetry_analysis AS a
+                JOIN telemetry AS t ON t.id = a.telemetry_id
+                ORDER BY t.timestamp DESC LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def dashboard_edges(self, online_seconds: int = 300) -> list[dict[str, Any]]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=online_seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.sensor_id, e.name, e.status, e.created_at, e.last_seen,
+                       COUNT(t.id) AS telemetry_count
+                FROM edges AS e
+                LEFT JOIN telemetry AS t ON t.sensor_id = e.sensor_id
+                GROUP BY e.sensor_id, e.name, e.status, e.created_at, e.last_seen
+                ORDER BY e.sensor_id
+                """
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["status"] = "online" if row["status"] == "online" and row["last_seen"] and row["last_seen"] >= cutoff else "offline"
+            result.append(item)
+        return result
+
+    def dashboard_telemetry(
+        self,
+        *,
+        limit: int = 50,
+        event_type: str | None = None,
+        sensor_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self.initialize()
+        clauses: list[str] = []
+        values: list[Any] = []
+        for column, value in (("event_type", event_type), ("sensor_id", sensor_id)):
+            if value is not None:
+                clauses.append(f"t.{column} = ?")
+                values.append(value)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        values.append(min(max(limit, 1), 100))
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT t.payload_json, t.timestamp, t.sensor_id, t.device_id, t.event_type FROM telemetry AS t{where} ORDER BY t.timestamp DESC LIMIT ?",
+                values,
+            ).fetchall()
+        result = []
+        for row in rows:
+            record = telemetry_from_json(row[0])
+            payload = record.payload
+            source = payload.get("source", {}) if isinstance(payload.get("source"), dict) else {}
+            destination = payload.get("destination", {}) if isinstance(payload.get("destination"), dict) else {}
+            result.append(
+                {
+                    "timestamp": row[1],
+                    "sensor_id": row[2],
+                    "device_id": row[3],
+                    "event_type": row[4],
+                    "source_ip": source.get("ip", payload.get("source_ip")),
+                    "destination_ip": destination.get("ip", payload.get("destination_ip")),
+                    "protocol": payload.get("protocol"),
+                    "bytes": payload.get("bytes_sent", 0) + payload.get("bytes_received", 0),
+                    "telemetry_id": record.record_id,
+                }
+            )
+        return result
+
+    def traffic_points(self, limit: int = 20) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT t.timestamp, json_extract(t.payload_json, '$.bytes_sent') +
+                       json_extract(t.payload_json, '$.bytes_received') AS actual_traffic,
+                       a.expected_traffic
+                FROM telemetry AS t
+                LEFT JOIN telemetry_analysis AS a ON a.telemetry_id = t.id
+                WHERE t.event_type = 'BEHAVIOR_SUMMARY'
+                ORDER BY t.timestamp DESC LIMIT ?
+                """,
+                (min(max(limit, 1), 100),),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
 
     def insert_analysis(self, result: AnalysisResult) -> bool:
         self.initialize()

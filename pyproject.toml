@@ -14,6 +14,7 @@ keywords = ["security", "network", "monitoring", "telemetry"]
 dependencies = [
     "PyYAML>=6.0",
     "fastapi>=0.115,<0.116",
+    "Jinja2>=3.1,<4.0",
     "joblib>=1.4,<2.0",
     "scapy>=2.5,<3.0",
     "scikit-learn>=1.5,<2.0",
@@ -33,3 +34,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+rocks = ["dashboard/templates/*.html", "dashboard/static/*"]

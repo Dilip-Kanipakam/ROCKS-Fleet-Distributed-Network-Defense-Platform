@@ -31,5 +31,11 @@ ml:
   minimum_samples: 20
   model_version: rocks-baseline-v1
 
+dashboard:
+  enabled: true
+  session_secret: ""
+  admin_username: ""
+  admin_password_hash: ""
+
 alerts:
   enabled: false

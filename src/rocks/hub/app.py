@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, status
+from fastapi.staticfiles import StaticFiles
 
 from rocks.hub.schemas import EdgeResponse, HealthResponse, StatsResponse, TelemetryIngestResponse, TelemetryResponse
 from rocks.hub.service import HubService
 from rocks.hub.storage import HubStorage
 from rocks.edge.telemetry import TelemetryRecord
+from rocks.dashboard.config import get_dashboard_config
+from rocks.dashboard.routes import DashboardRoutes
+from rocks.dashboard.service import DashboardService
 
 
 def create_app(database_path: str | None = None) -> FastAPI:
@@ -15,6 +20,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
     service = HubService(storage)
     app = FastAPI(title="ROCKS Hub", version="0.1.0")
     app.state.hub_service = service
+    dashboard_config = get_dashboard_config()
+    if dashboard_config.enabled:
+        dashboard_directory = Path(__file__).resolve().parents[1] / "dashboard"
+        app.mount("/dashboard/static", StaticFiles(directory=dashboard_directory / "static"), name="dashboard-static")
+        dashboard_service = DashboardService(storage, service.ml)
+        app.state.dashboard_service = dashboard_service
+        app.include_router(DashboardRoutes(dashboard_service, dashboard_config.auth).router())
 
     def auth_service(authorization: str | None) -> None:
         if not authorization or not authorization.startswith("Bearer "):

@@ -46,13 +46,11 @@ The project is designed to scale from a single Linux all-in-one deployment to a 
 
 ## Current status
 
-Chunk 3 now converts Edge flow and feature records into versioned metadata-only telemetry, persists it in local SQLite storage, and provides a persistent local offline buffer. The current Edge stores telemetry locally. Transmission to the ROCKS Hub is planned for the next server/Hub integration stage.
-
-Packet capture and parsing are implemented in the Edge observation layer, while ML and the Command Center are intentionally not implemented yet.
+Chunks 2 and 3 implement Edge observation, versioned metadata-only telemetry, local SQLite storage, and a persistent offline buffer.
 
 Chunk 4 adds the ROCKS Hub API as the central ingestion boundary. It validates the existing telemetry schema, authenticates registered Edge sensors with hashed API keys, stores records in a dedicated indexed SQLite database, and provides health, query, registry, and statistics endpoints. The Edge sender uses the existing local buffer and removes records only after acknowledgement.
 
-The Hub does not perform packet capture. The Command Center remains a future layer.
+The Hub does not perform packet capture. It serves the read-only Command Center from the same FastAPI process.
 
 Chunk 5 adds the local ML layer after Hub storage:
 
@@ -66,3 +64,5 @@ Telemetry
 ```
 
 The model uses existing behavior-summary fields and time-of-day/day-of-week features. It identifies behavior that differs from the learned baseline; it does not prove that an attack occurred. A new deployment needs enough historical telemetry before the baseline is meaningful.
+
+Chunk 6 adds the administrator-facing Command Center. It uses signed sessions, bounded read-only queries, and local Jinja2 templates. Dashboard views expose health, Edge status, telemetry metadata, analysis events, retention priorities, and traffic history without exposing credentials or enabling network enforcement.

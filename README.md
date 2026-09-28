@@ -24,15 +24,15 @@ Command Center / Dashboard
 
 ## ROCKS Edge
 
-ROCKS Edge is the observation layer. In future chunks, it will be responsible for reading network metadata from mirrored traffic, extracting flow information and features, buffering local data, and forwarding structured telemetry to the Hub. This chunk does not implement packet capture or edge data collection.
+ROCKS Edge is the observation layer responsible for reading authorized mirrored traffic, extracting metadata and flow features, buffering local data, and forwarding structured telemetry to the Hub.
 
 ## ROCKS Hub
 
-ROCKS Hub is the centralized collection and analysis layer. Future Hub functionality will include receiving telemetry, storing it, running detection logic, and exposing services to the dashboard. This chunk does not implement the Hub.
+ROCKS Hub is the centralized collection and analysis layer. It receives authenticated telemetry, stores it, runs the local ML baseline, and serves the API and Command Center dashboard.
 
 ## Command Center
 
-The Command Center is the administrator dashboard for investigation, monitoring, and operational awareness. It is planned for a future chunk and is not implemented here.
+The Command Center is the read-only administrator dashboard for investigation, monitoring, and operational awareness. It is served by the existing Hub process at `/dashboard`.
 
 ## Metadata-first approach
 
@@ -47,7 +47,7 @@ Machine learning is planned for a later chunk and will be used to:
 - generate anomaly scores
 - help prioritize telemetry retention to reduce storage use
 
-No ML implementation is included in this foundation chunk.
+ML is local and baseline-oriented. It does not prove that an attack occurred.
 
 ## Current development status
 
@@ -67,7 +67,7 @@ This repository currently contains the ROCKS Fleet foundation and first Edge obs
 - local Hub-side time-aware baseline learning and retention prioritization
 - documentation and test baseline
 
-Chunk 1 established the project foundation. Chunk 2 added the Edge observation layer. Chunk 3 added local structured telemetry, SQLite storage, and an offline buffer. Chunk 4 added the central Hub ingestion API and Edge sender. Chunk 5 adds local baseline learning, anomaly scoring, and retention prioritization. The dashboard, simulator, and automatic response remain intentionally unimplemented.
+Chunk 1 established the project foundation. Chunk 2 added the Edge observation layer. Chunk 3 added local structured telemetry, SQLite storage, and an offline buffer. Chunk 4 added the central Hub ingestion API and Edge sender. Chunk 5 adds local baseline learning, anomaly scoring, and retention prioritization. Chunk 6 adds the read-only Command Center. The simulator and automatic response remain intentionally unimplemented.
 
 ## Python virtual environment
 
@@ -93,6 +93,8 @@ rocks status
 rocks config
 rocks logs
 rocks test
+rocks dashboard status
+rocks dashboard run
 ```
 
 ## Run tests

@@ -38,17 +38,18 @@ Linux machine
 |- ROCKS Hub
 |- SQLite
 `- future Command Center
+`- Command Center
 ```
 
 Distributed:
 
 ```text
 ROCKS Edge 01 -\|
-ROCKS Edge 02 -+--> ROCKS Hub --> future Command Center
+ROCKS Edge 02 -+--> ROCKS Hub --> Command Center
 ROCKS Edge 03 -/
 ```
 
-The Command Center, advanced detection, and automatic response are not implemented yet. The Hub is a defensive telemetry backend and does not capture packets, scan networks, block devices, or expose database files over HTTP.
+Advanced detection and automatic response are not implemented yet. The Hub is a defensive telemetry backend and does not capture packets, scan networks, block devices, or expose database files over HTTP.
 
 ## ML analytics
 

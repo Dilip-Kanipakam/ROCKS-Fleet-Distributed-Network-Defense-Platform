@@ -42,17 +42,18 @@ The project is intentionally planned in chunks so the architecture remains coher
 - explicit training and lightweight inference
 - no destructive deletion or attack classification
 
-## Chunk 6: Safe traffic/anomaly simulator
+## Chunk 6: Command Center dashboard
+
+- read-only administrator dashboard
+- authenticated session-based access
+- Edge, telemetry, event, traffic, storage, and ML status views
+- bounded JSON polling for live refresh
+
+## Chunk 7: Safe traffic/anomaly simulator
 
 - controlled simulated traffic generation
 - evaluation of detection workflows
 - safe testing without live network risk
-
-## Chunk 7: Command Center dashboard
-
-- administrator-facing dashboard
-- view detections and telemetry summaries
-- secure operations and workflow support
 
 ## Chunk 8: Integration, deployment, testing, and hardening
 
