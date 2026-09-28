@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
+from pathlib import Path
 
 from rocks import __version__
 from rocks.config import get_config_path
@@ -9,6 +11,8 @@ from rocks.edge.capture import CaptureError, PacketCapture
 from rocks.edge.features import aggregate_features
 from rocks.edge.flow import FlowTracker
 from rocks.edge.parser import parse_packet
+from rocks.edge.storage import TelemetryStorage
+from rocks.edge.telemetry import behavior_summary_telemetry
 from rocks.logging_config import configure_logging
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.l2 import Ether
@@ -42,6 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
     edge_subparsers.add_parser("test", help="run the non-root synthetic Edge pipeline")
     capture_parser = edge_subparsers.add_parser("capture", help="capture authorized live metadata")
     capture_parser.add_argument("--interface", required=True, help="interface to observe")
+    telemetry_parser = edge_subparsers.add_parser("telemetry", help="local Edge telemetry commands")
+    telemetry_subparsers = telemetry_parser.add_subparsers(dest="telemetry_command")
+    telemetry_subparsers.add_parser("test", help="run a local telemetry serialization and storage test")
+    storage_parser = edge_subparsers.add_parser("storage", help="local Edge storage commands")
+    storage_subparsers = storage_parser.add_subparsers(dest="storage_command")
+    storage_subparsers.add_parser("status", help="show local telemetry storage status")
     return parser
 
 
@@ -114,6 +124,42 @@ def main(argv: list[str] | None = None) -> int:
             except (CaptureError, ValueError) as exc:
                 print(f"ROCKS Edge capture error: {exc}", file=sys.stderr)
                 return 2
+            return 0
+        if args.edge_command == "telemetry" and args.telemetry_command == "test":
+            with tempfile.TemporaryDirectory(prefix="rocks-telemetry-") as directory:
+                storage = TelemetryStorage(Path(directory) / "telemetry.db")
+                from rocks.edge.features import TrafficFeatures
+
+                features = TrafficFeatures(
+                    window_start=0.0,
+                    window_end=60.0,
+                    packet_count=0,
+                    total_bytes=0,
+                    bytes_sent=0,
+                    bytes_received=0,
+                    connection_count=0,
+                    active_flow_count=0,
+                    unique_destination_ip_count=0,
+                    unique_destination_port_count=0,
+                    unique_source_ip_count=0,
+                    tcp_packet_count=0,
+                    udp_packet_count=0,
+                    icmp_packet_count=0,
+                    dns_packet_count=0,
+                    traffic_rate=0.0,
+                    packet_rate=0.0,
+                )
+                storage.insert_telemetry(
+                    behavior_summary_telemetry(features, "ROCKS-EDGE-TEST")
+                )
+                print(f"ROCKS Edge telemetry test passed: {storage.count()} record stored locally.")
+            return 0
+        if args.edge_command == "storage" and args.storage_command == "status":
+            print("ROCKS Edge local storage is available.")
+            print("Hub transmission is not implemented yet.")
+            return 0
+        if args.edge_command in {"telemetry", "storage"}:
+            parser.parse_args(["edge", args.edge_command, "--help"])
             return 0
         parser.parse_args(["edge", "--help"])
         return 0

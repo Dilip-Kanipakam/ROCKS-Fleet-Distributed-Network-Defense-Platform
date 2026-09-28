@@ -12,10 +12,21 @@ The first Edge pipeline is now implemented for authorized defensive monitoring:
 4. Configurable flow expiration
 5. In-memory time-window feature extraction
 6. A non-root synthetic demonstration through `rocks edge test`
+7. Versioned structured telemetry records
+8. SQLite local telemetry storage
+9. A persistent local offline buffer
 
 Supported metadata includes Ethernet MAC addresses, IPv4 addresses, protocol, TCP ports and flags, UDP ports, ICMP type, packet length, and DNS-related indicators. Complete packet payloads are never stored or logged.
 
 Each flow tracks first and last observation time, packet count, bytes, duration, packet rate, and byte rate. Feature records include traffic volume and rate, protocol counts, active flows, unique destinations and sources, connection counts, and an optional IP/MAC-based device identifier. Device identifiers describe observed network endpoints only; ROCKS does not identify human users.
+
+## Chunk 3 telemetry and storage
+
+Edge telemetry uses schema version `1.0` and a common envelope containing `timestamp`, `sensor_id`, `device_id`, and `event_type`. Supported events are `CONNECTION`, `DNS`, `RECONNECT`, and `BEHAVIOR_SUMMARY`. Timestamps are UTC ISO-8601 values. Records contain metadata and behavioral counters only, plus optional future retention fields that are currently null.
+
+Behavior summaries use a configurable 60-second window by default. The current Edge stores telemetry locally in SQLite with indexed timestamp, sensor, device, and event fields. A separate SQLite-backed FIFO buffer keeps records available across process restarts when future Hub delivery is unavailable.
+
+The current Edge stores telemetry locally. Transmission to the ROCKS Hub is planned for the next server/Hub integration stage.
 
 ## Live capture and SPAN
 

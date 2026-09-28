@@ -17,9 +17,11 @@ hub:
 
 telemetry:
   interval_seconds: 60
+  window_seconds: 60
 
 storage:
   database: ""
+  buffer: ""
 
 ml:
   enabled: false

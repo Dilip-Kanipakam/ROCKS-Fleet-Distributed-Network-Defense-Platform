@@ -38,3 +38,19 @@ def get_config_path() -> str:
     if env_path:
         return env_path
     return str(DEFAULT_CONFIG_PATH)
+
+
+def get_storage_path(config_path: str | Path | None = None) -> Path:
+    config = load_config(config_path)
+    configured_path = config.get("storage", {}).get("database")
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return Path(__file__).resolve().parents[2] / "data" / "rocks-edge.db"
+
+
+def get_buffer_path(config_path: str | Path | None = None) -> Path:
+    config = load_config(config_path)
+    configured_path = config.get("storage", {}).get("buffer")
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return Path(__file__).resolve().parents[2] / "data" / "rocks-edge-buffer.db"

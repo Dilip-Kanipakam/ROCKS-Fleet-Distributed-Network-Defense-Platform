@@ -46,4 +46,6 @@ The project is designed to scale from a single Linux all-in-one deployment to a 
 
 ## Current status
 
-Chunk 1 is only the foundation. Packet capture, ML, Hub services, and the Command Center are intentionally not implemented yet.
+Chunk 3 now converts Edge flow and feature records into versioned metadata-only telemetry, persists it in local SQLite storage, and provides a persistent local offline buffer. The current Edge stores telemetry locally. Transmission to the ROCKS Hub is planned for the next server/Hub integration stage.
+
+Packet capture and parsing are implemented in the Edge observation layer, while ML, Hub services, and the Command Center are intentionally not implemented yet.

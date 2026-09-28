@@ -21,9 +21,10 @@ The project is intentionally planned in chunks so the architecture remains coher
 
 ## Chunk 3: Telemetry and local storage
 
-- structured telemetry format
-- local storage handling
-- reliability and buffering concerns
+- versioned structured telemetry format
+- local SQLite storage and indexed retrieval
+- persistent offline buffering
+- reliability and duplicate protection
 
 ## Chunk 4: ROCKS Hub
 

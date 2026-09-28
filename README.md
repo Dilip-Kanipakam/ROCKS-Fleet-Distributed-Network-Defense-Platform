@@ -61,9 +61,11 @@ This repository currently contains the ROCKS Fleet foundation and first Edge obs
 - bounded five-tuple flow tracking and expiration
 - in-memory time-window traffic features
 - non-root synthetic Edge pipeline demonstration
+- versioned telemetry records with connection, DNS, reconnect, and behavior-summary events
+- SQLite local telemetry storage and a persistent offline buffer
 - documentation and test baseline
 
-Chunk 1 established the project foundation. Chunk 2 adds the Edge observation layer only. Telemetry transmission, local database storage, the Hub, the dashboard, and ML features remain intentionally unimplemented.
+Chunk 1 established the project foundation. Chunk 2 added the Edge observation layer. Chunk 3 adds local structured telemetry, SQLite storage, and an offline buffer. Transmission to the ROCKS Hub, the Hub itself, the dashboard, and ML features remain intentionally unimplemented.
 
 ## Python virtual environment
 
