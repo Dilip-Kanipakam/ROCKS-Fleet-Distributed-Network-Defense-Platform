@@ -12,7 +12,9 @@ ROCKS Hub is the central self-hosted telemetry backend introduced in Chunk 4. It
 - `GET /api/v1/edges/{sensor_id}`
 - `GET /api/v1/stats`
 
-Telemetry ingestion uses `Authorization: Bearer <API_KEY>`. Edge API keys are generated during local registration and stored only as salted PBKDF2 hashes. Plaintext keys are displayed only by the registration command and are never returned by API responses.
+Only `GET /api/v1/health` is public. Telemetry ingestion and query endpoints (`GET /api/v1/telemetry`, `GET /api/v1/telemetry/{telemetry_id}`, `GET /api/v1/edges`, `GET /api/v1/edges/{sensor_id}`, and `GET /api/v1/stats`) require `Authorization: Bearer <registered-edge-api-key>`.
+
+Edge API keys are generated during local registration and stored only as salted PBKDF2 hashes. Plaintext keys are displayed only by the registration command and are never returned by API responses. Authentication failures use a generic `401 Invalid credentials` response.
 
 Start the Hub locally with:
 

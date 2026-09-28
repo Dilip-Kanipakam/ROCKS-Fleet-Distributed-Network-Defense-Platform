@@ -20,6 +20,11 @@ class EdgeRegistry:
         stored_hash = self.storage.get_api_key_hash(sensor_id)
         return stored_hash is not None and verify_api_key(api_key, stored_hash)
 
+    def authenticate_api_key(self, api_key: str) -> bool:
+        if not api_key:
+            return False
+        return any(self.authenticate(edge.sensor_id, api_key) for edge in self.storage.list_edges())
+
     def get(self, sensor_id: str) -> EdgeInfo | None:
         return self.storage.get_edge(sensor_id)
 

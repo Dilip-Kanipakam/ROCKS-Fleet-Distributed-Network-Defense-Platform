@@ -36,6 +36,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer API key required")
         # The sensor ID is part of the validated telemetry body; this dependency only verifies format.
 
+    def authenticate_query(authorization: str | None) -> None:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        token = authorization[7:].strip()
+        if not token or not service.registry.authenticate_api_key(token):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
     @app.get("/api/v1/health", response_model=HealthResponse)
     def health() -> dict[str, Any]:
         return service.health()
@@ -54,33 +61,39 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     @app.get("/api/v1/telemetry", response_model=list[TelemetryResponse])
     def list_telemetry(
+        authorization: str | None = Header(default=None),
         sensor_id: str | None = None,
         device_id: str | None = None,
         event_type: str | None = None,
         limit: int = Query(default=100, ge=1, le=1000),
     ) -> list[TelemetryRecord]:
+        authenticate_query(authorization)
         return service.storage.query_telemetry(sensor_id=sensor_id, device_id=device_id, event_type=event_type, limit=limit)
 
     @app.get("/api/v1/telemetry/{telemetry_id}", response_model=TelemetryResponse)
-    def get_telemetry(telemetry_id: str) -> TelemetryRecord:
+    def get_telemetry(telemetry_id: str, authorization: str | None = Header(default=None)) -> TelemetryRecord:
+        authenticate_query(authorization)
         record = service.storage.get_telemetry(telemetry_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Telemetry record not found")
         return record
 
     @app.get("/api/v1/edges", response_model=list[EdgeResponse])
-    def list_edges() -> list[dict[str, Any]]:
+    def list_edges(authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
+        authenticate_query(authorization)
         return [edge.to_dict() for edge in service.edges()]
 
     @app.get("/api/v1/edges/{sensor_id}", response_model=EdgeResponse)
-    def get_edge(sensor_id: str) -> dict[str, Any]:
+    def get_edge(sensor_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        authenticate_query(authorization)
         edge = service.registry.get(sensor_id)
         if edge is None:
             raise HTTPException(status_code=404, detail="Edge sensor not found")
         return edge.to_dict()
 
     @app.get("/api/v1/stats", response_model=StatsResponse)
-    def stats() -> dict[str, Any]:
+    def stats(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        authenticate_query(authorization)
         return service.stats()
 
     return app
