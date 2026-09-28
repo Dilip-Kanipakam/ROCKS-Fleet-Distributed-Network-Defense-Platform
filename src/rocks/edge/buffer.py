@@ -6,6 +6,7 @@ from pathlib import Path
 from rocks.config import get_buffer_path
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
 from rocks.logging_config import configure_logging
+from rocks.sqlite import connect_sqlite, enable_wal
 
 
 class TelemetryBuffer:
@@ -18,14 +19,15 @@ class TelemetryBuffer:
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.database_path) as connection:
+        with self._connect() as connection:
+            enable_wal(connection)
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS buffer (sequence INTEGER PRIMARY KEY AUTOINCREMENT, record_id TEXT UNIQUE NOT NULL, payload_json TEXT NOT NULL)"
             )
 
     def add(self, record: TelemetryRecord) -> bool:
         try:
-            with sqlite3.connect(self.database_path) as connection:
+            with self._connect() as connection:
                 connection.execute(
                     "INSERT INTO buffer (record_id, payload_json) VALUES (?, ?)",
                     (record.record_id, telemetry_to_json(record)),
@@ -39,14 +41,14 @@ class TelemetryBuffer:
     def peek(self, limit: int = 1) -> list[TelemetryRecord]:
         if limit <= 0:
             return []
-        with sqlite3.connect(self.database_path) as connection:
+        with self._connect() as connection:
             rows = connection.execute(
                 "SELECT payload_json FROM buffer ORDER BY sequence ASC LIMIT ?", (limit,)
             ).fetchall()
         return [telemetry_from_json(row[0]) for row in rows]
 
     def remove(self, record_id: str | None = None, limit: int = 1) -> int:
-        with sqlite3.connect(self.database_path) as connection:
+        with self._connect() as connection:
             if record_id is not None:
                 cursor = connection.execute("DELETE FROM buffer WHERE record_id = ?", (record_id,))
             else:
@@ -62,5 +64,8 @@ class TelemetryBuffer:
             return cursor.rowcount
 
     def size(self) -> int:
-        with sqlite3.connect(self.database_path) as connection:
+        with self._connect() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM buffer").fetchone()[0])
+
+    def _connect(self) -> sqlite3.Connection:
+        return connect_sqlite(self.database_path)

@@ -9,17 +9,20 @@ from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry
 from rocks.alerts.engine import Alert
 from rocks.hub.models import EdgeInfo
 from rocks.ml.analysis import AnalysisResult
+from rocks.sqlite import connect_sqlite, enable_wal
 
 
 class HubStorage:
     """Dedicated SQLite storage for Hub registry and central telemetry."""
 
-    def __init__(self, database_path: str | Path) -> None:
+    def __init__(self, database_path: str | Path, edge_liveness_timeout_seconds: int = 60) -> None:
         self.database_path = Path(database_path)
+        self.edge_liveness_timeout_seconds = max(1, int(edge_liveness_timeout_seconds))
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            enable_wal(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS edges (
@@ -98,7 +101,7 @@ class HubStorage:
                 "SELECT sensor_id, name, status, created_at, last_seen FROM edges WHERE sensor_id = ?",
                 (sensor_id,),
             ).fetchone()
-        return EdgeInfo(*row) if row else None
+        return self._edge_info(row) if row else None
 
     def get_api_key_hash(self, sensor_id: str) -> str | None:
         self.initialize()
@@ -110,7 +113,7 @@ class HubStorage:
         self.initialize()
         with self._connect() as connection:
             rows = connection.execute("SELECT sensor_id, name, status, created_at, last_seen FROM edges ORDER BY sensor_id").fetchall()
-        return [EdgeInfo(*row) for row in rows]
+        return [self._edge_info(row) for row in rows]
 
     def touch_edge(self, sensor_id: str) -> None:
         self.initialize()
@@ -191,8 +194,7 @@ class HubStorage:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def dashboard_edges(self, online_seconds: int = 300) -> list[dict[str, Any]]:
-        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=online_seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    def dashboard_edges(self) -> list[dict[str, Any]]:
         self.initialize()
         with self._connect() as connection:
             rows = connection.execute(
@@ -205,12 +207,13 @@ class HubStorage:
                 ORDER BY e.sensor_id
                 """
             ).fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            item["status"] = "online" if row["status"] == "online" and row["last_seen"] and row["last_seen"] >= cutoff else "offline"
-            result.append(item)
-        return result
+        return [
+            {
+                **dict(row),
+                "status": self._liveness_status(row["last_seen"]),
+            }
+            for row in rows
+        ]
 
     def dashboard_telemetry(
         self,
@@ -360,10 +363,41 @@ class HubStorage:
         return {"total_recent": int(total), "high": int(high), "warning": int(warning), "open": int(open_count)}
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        connection = connect_sqlite(self.database_path)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def _edge_info(self, row: sqlite3.Row) -> EdgeInfo:
+        return EdgeInfo(
+            sensor_id=row["sensor_id"],
+            name=row["name"],
+            status=self._liveness_status(row["last_seen"]),
+            created_at=row["created_at"],
+            last_seen=row["last_seen"],
+        )
+
+    def _liveness_status(self, last_seen: str | None) -> str:
+        return edge_liveness_status(last_seen, self.edge_liveness_timeout_seconds)
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def edge_liveness_status(
+    last_seen: str | None,
+    timeout_seconds: int,
+    *,
+    now: datetime | None = None,
+) -> str:
+    if not last_seen:
+        return "OFFLINE"
+    try:
+        seen_at = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+    except ValueError:
+        return "OFFLINE"
+    reference_time = now or datetime.now(timezone.utc)
+    if reference_time.tzinfo is None:
+        reference_time = reference_time.replace(tzinfo=timezone.utc)
+    age_seconds = (reference_time.astimezone(timezone.utc) - seen_at.astimezone(timezone.utc)).total_seconds()
+    return "ONLINE" if 0 <= age_seconds <= max(1, timeout_seconds) else "OFFLINE"

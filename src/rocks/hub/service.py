@@ -84,6 +84,6 @@ class HubService:
         return {
             "telemetry_records": self.storage.count(),
             "registered_edges": len(edges),
-            "active_edges": sum(edge.status == "online" for edge in edges),
+            "active_edges": sum(edge.status == "ONLINE" for edge in edges),
             "event_type_counts": self.storage.event_type_counts(),
         }

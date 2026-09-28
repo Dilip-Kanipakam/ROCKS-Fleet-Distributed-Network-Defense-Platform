@@ -19,6 +19,7 @@ hub:
   url: ""
   api_key: ""
   timeout_seconds: 10
+  edge_liveness_timeout_seconds: 60
 
 telemetry:
   interval_seconds: 60

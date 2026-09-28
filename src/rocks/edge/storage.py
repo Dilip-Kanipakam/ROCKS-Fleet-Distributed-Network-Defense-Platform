@@ -8,6 +8,7 @@ from typing import Iterable
 from rocks.config import get_storage_path
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
 from rocks.logging_config import configure_logging
+from rocks.sqlite import connect_sqlite, enable_wal
 
 
 class TelemetryStorage:
@@ -20,6 +21,7 @@ class TelemetryStorage:
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            enable_wal(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS telemetry (
@@ -114,6 +116,6 @@ class TelemetryStorage:
         return [telemetry_from_json(row[0]) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        connection = connect_sqlite(self.database_path)
         connection.row_factory = sqlite3.Row
         return connection

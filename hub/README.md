@@ -16,6 +16,8 @@ Only `GET /api/v1/health` is public. Telemetry ingestion and query endpoints (`G
 
 Edge API keys are generated during local registration and stored only as salted PBKDF2 hashes. Plaintext keys are displayed only by the registration command and are never returned by API responses. Authentication failures use a generic `401 Invalid credentials` response.
 
+Hub SQLite connections use WAL mode for file-backed databases and a 5-second busy timeout. Edge liveness is derived from successful authenticated telemetry communication (`last_seen`). The configurable `hub.edge_liveness_timeout_seconds` defaults to 60 seconds. `ONLINE` means the Hub observed communication within that window; `OFFLINE` means no recent communication was observed, not that the physical sensor is definitely disconnected. The last-seen time is retained for offline sensors.
+
 Start the Hub locally with:
 
 ```bash

@@ -60,6 +60,8 @@ rocks edge run --interface eth0 --hub-url http://127.0.0.1:8000 --api-key '<edge
 
 The API key is never printed or included in status output. When the Hub is unavailable, telemetry remains in the local SQLite buffer. Records are removed only after successful Hub acknowledgement. Stop with `Ctrl+C`; the agent stops capture and flushes safe local state.
 
+The Edge telemetry database and persistent buffer use SQLite WAL mode with a 5-second busy timeout to tolerate short concurrent read/write contention. Hub `ONLINE`/`OFFLINE` status reflects recent successful communication, not guaranteed physical connectivity.
+
 For a non-root demonstration without a physical interface:
 
 ```bash

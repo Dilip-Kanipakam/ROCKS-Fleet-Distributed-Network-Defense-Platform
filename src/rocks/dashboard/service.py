@@ -25,8 +25,8 @@ class DashboardService:
             "hub_status": "ONLINE",
             "edges": {
                 "total": len(edges),
-                "online": sum(edge["status"] == "online" for edge in edges),
-                "offline": sum(edge["status"] != "online" for edge in edges),
+                "online": sum(edge["status"] == "ONLINE" for edge in edges),
+                "offline": sum(edge["status"] == "OFFLINE" for edge in edges),
             },
             "telemetry": {"total": self.storage.count(), "recent": self.storage.recent_count()},
             "ml": {

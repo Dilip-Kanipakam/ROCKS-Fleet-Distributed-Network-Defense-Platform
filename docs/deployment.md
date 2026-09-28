@@ -42,3 +42,5 @@ The Hub can run on the same Linux machine as Edge at `http://127.0.0.1:8000`, or
 - Alert email is disabled by default and no automatic response is performed
 - Configure a managed switch SPAN destination port to deliver selected traffic to Edge
 - `rocks edge run --dry-run` validates the local pipeline without root or an interface
+- Hub `ONLINE` means recent authenticated telemetry was received within `hub.edge_liveness_timeout_seconds` (default 60); `OFFLINE` means no recent communication was observed, not confirmed physical disconnection
+- SQLite files use WAL mode and a 5000 ms busy timeout

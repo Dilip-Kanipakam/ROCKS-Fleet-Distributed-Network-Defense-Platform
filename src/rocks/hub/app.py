@@ -13,10 +13,15 @@ from rocks.edge.telemetry import TelemetryRecord
 from rocks.dashboard.config import get_dashboard_config
 from rocks.dashboard.routes import DashboardRoutes
 from rocks.dashboard.service import DashboardService
+from rocks.hub.config import get_hub_config
 
 
 def create_app(database_path: str | None = None) -> FastAPI:
-    storage = HubStorage(database_path or "data/rocks-hub.db")
+    hub_config = get_hub_config()
+    storage = HubStorage(
+        database_path or str(hub_config.database_path),
+        edge_liveness_timeout_seconds=hub_config.edge_liveness_timeout_seconds,
+    )
     service = HubService(storage)
     app = FastAPI(title="ROCKS Hub", version="0.1.0")
     app.state.hub_service = service
