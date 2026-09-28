@@ -51,15 +51,19 @@ No ML implementation is included in this foundation chunk.
 
 ## Current development status
 
-This repository currently contains only the foundation for ROCKS Fleet:
+This repository currently contains the ROCKS Fleet foundation and first Edge observation pipeline:
 
 - project structure
 - Python package metadata
 - configurable CLI
 - configuration and logging scaffolding
+- Scapy-based Edge packet metadata parsing
+- bounded five-tuple flow tracking and expiration
+- in-memory time-window traffic features
+- non-root synthetic Edge pipeline demonstration
 - documentation and test baseline
 
-Chunk 1 is intentionally limited to project foundation work. It does not implement packet capture, the Hub, the dashboard, or ML features.
+Chunk 1 established the project foundation. Chunk 2 adds the Edge observation layer only. Telemetry transmission, local database storage, the Hub, the dashboard, and ML features remain intentionally unimplemented.
 
 ## Python virtual environment
 
