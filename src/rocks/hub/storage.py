@@ -7,6 +7,7 @@ from typing import Any
 
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
 from rocks.hub.models import EdgeInfo
+from rocks.ml.analysis import AnalysisResult
 
 
 class HubStorage:
@@ -43,6 +44,21 @@ class HubStorage:
                 CREATE INDEX IF NOT EXISTS idx_hub_telemetry_device_id ON telemetry(device_id);
                 CREATE INDEX IF NOT EXISTS idx_hub_telemetry_event_type ON telemetry(event_type);
                 CREATE INDEX IF NOT EXISTS idx_hub_telemetry_sensor_timestamp ON telemetry(sensor_id, timestamp);
+                CREATE TABLE IF NOT EXISTS telemetry_analysis (
+                    telemetry_id TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    baseline_status TEXT NOT NULL,
+                    expected_traffic REAL,
+                    actual_traffic REAL NOT NULL,
+                    deviation REAL,
+                    anomaly_score REAL,
+                    retention_score REAL,
+                    retention_priority TEXT,
+                    analyzed_at TEXT NOT NULL,
+                    PRIMARY KEY (telemetry_id, model_version)
+                );
+                CREATE INDEX IF NOT EXISTS idx_analysis_anomaly_score ON telemetry_analysis(anomaly_score);
+                CREATE INDEX IF NOT EXISTS idx_analysis_retention_priority ON telemetry_analysis(retention_priority);
                 """
             )
 
@@ -127,6 +143,60 @@ class HubStorage:
         self.initialize()
         with self._connect() as connection:
             return {str(row[0]): int(row[1]) for row in connection.execute("SELECT event_type, COUNT(*) FROM telemetry GROUP BY event_type")}
+
+    def insert_analysis(self, result: AnalysisResult) -> bool:
+        self.initialize()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO telemetry_analysis
+                (telemetry_id, model_version, baseline_status, expected_traffic,
+                 actual_traffic, deviation, anomaly_score, retention_score,
+                 retention_priority, analyzed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result.telemetry_id,
+                    result.model_version,
+                    result.baseline_status,
+                    result.expected_traffic,
+                    result.actual_traffic,
+                    result.deviation,
+                    result.anomaly_score,
+                    result.retention_score,
+                    result.retention_priority,
+                    result.analyzed_at,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def get_analysis(self, telemetry_id: str, model_version: str) -> AnalysisResult | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT telemetry_id, model_version, baseline_status, expected_traffic, actual_traffic, deviation, anomaly_score, retention_score, retention_priority, analyzed_at FROM telemetry_analysis WHERE telemetry_id = ? AND model_version = ?",
+                (telemetry_id, model_version),
+            ).fetchone()
+        if row is None:
+            return None
+        record = self.get_telemetry(telemetry_id)
+        if record is None:
+            return None
+        return AnalysisResult(
+            telemetry_id=row[0],
+            sensor_id=record.sensor_id,
+            device_id=record.device_id,
+            timestamp=record.timestamp,
+            model_version=row[1],
+            baseline_status=row[2],
+            expected_traffic=row[3],
+            actual_traffic=row[4],
+            deviation=row[5],
+            anomaly_score=row[6],
+            retention_score=row[7],
+            retention_priority=row[8],
+            analyzed_at=row[9],
+        )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)

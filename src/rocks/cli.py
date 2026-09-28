@@ -18,6 +18,9 @@ from rocks.hub.config import get_hub_config
 from rocks.hub.registry import EdgeRegistry
 from rocks.hub.storage import HubStorage
 from rocks.logging_config import configure_logging
+from rocks.ml.config import get_ml_config
+from rocks.ml.demo import run_demo
+from rocks.ml.service import MLService
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.l2 import Ether
 from scapy.packet import Packet
@@ -68,6 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
     register_parser = hub_edge_subparsers.add_parser("register", help="register an Edge sensor")
     register_parser.add_argument("--sensor-id", required=True)
     register_parser.add_argument("--name")
+    ml_parser = subparsers.add_parser("ml", help="ROCKS ML baseline commands")
+    ml_subparsers = ml_parser.add_subparsers(dest="ml_command")
+    ml_subparsers.add_parser("status", help="show ML baseline status")
+    ml_subparsers.add_parser("train", help="train the local baseline model")
+    ml_subparsers.add_parser("test", help="run the deterministic ML demonstration")
+    analyze_parser = ml_subparsers.add_parser("analyze", help="analyze a stored telemetry record")
+    analyze_parser.add_argument("telemetry_id")
     return parser
 
 
@@ -209,6 +219,45 @@ def main(argv: list[str] | None = None) -> int:
             parser.parse_args(["hub", "edge", "--help"])
             return 0
         parser.parse_args(["hub", "--help"])
+        return 0
+
+    if args.command == "ml":
+        config = get_ml_config()
+        if args.ml_command == "test":
+            with tempfile.TemporaryDirectory(prefix="rocks-ml-") as directory:
+                normal_score, spike_score = run_demo(Path(directory) / "baseline.joblib")
+            print(f"ROCKS ML synthetic test passed: normal={normal_score:.3f}, spike={spike_score:.3f}")
+            return 0
+        service = MLService(
+            HubStorage(get_hub_config().database_path),
+            config.model_path,
+            config.minimum_samples,
+            config.model_version,
+        )
+        if args.ml_command == "status":
+            print(f"ML enabled for Hub inference: {config.enabled}")
+            for key, value in service.status().items():
+                print(f"{key.replace('_', ' ').title()}: {value}")
+            return 0
+        if args.ml_command == "train":
+            samples = service.train()
+            print(f"Training samples: {samples}")
+            print(f"ML status: {service.model.status.value}")
+            if service.model.status.value == "NOT_READY":
+                print(f"Baseline requires at least {service.model.minimum_samples} samples.")
+            return 0
+        if args.ml_command == "analyze":
+            if service is None:
+                print("ML status: DISABLED")
+                return 0
+            record = service.storage.get_telemetry(args.telemetry_id)
+            if record is None:
+                print("Telemetry record not found.", file=sys.stderr)
+                return 2
+            result = service.analyze(record)
+            print(result.to_dict() if result else "Only BEHAVIOR_SUMMARY records can be analyzed.")
+            return 0
+        parser.parse_args(["ml", "--help"])
         return 0
 
     print(f"ROCKS Fleet {__version__}")

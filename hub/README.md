@@ -48,4 +48,8 @@ ROCKS Edge 02 -+--> ROCKS Hub --> future Command Center
 ROCKS Edge 03 -/
 ```
 
-The Command Center, ML, detection, and automatic response are not implemented yet. The Hub is a defensive telemetry backend and does not capture packets, scan networks, block devices, or expose database files over HTTP.
+The Command Center, advanced detection, and automatic response are not implemented yet. The Hub is a defensive telemetry backend and does not capture packets, scan networks, block devices, or expose database files over HTTP.
+
+## ML analytics
+
+Chunk 5 adds an optional local ML service behind the Hub. It learns a time-aware baseline from historical `BEHAVIOR_SUMMARY` records, then calculates expected traffic, anomaly score, and storage-retention priority. Telemetry ingestion remains successful when fewer than the configured minimum samples are available or analysis fails. ML does not classify attacks or trigger automatic response.

@@ -7,6 +7,9 @@ from rocks.edge.telemetry import EVENT_TYPES, TelemetryRecord, telemetry_from_di
 from rocks.hub.models import EdgeInfo
 from rocks.hub.registry import EdgeRegistry
 from rocks.hub.storage import HubStorage
+from rocks.logging_config import configure_logging
+from rocks.ml.config import get_ml_config
+from rocks.ml.service import MLService
 
 
 class HubService:
@@ -14,6 +17,14 @@ class HubService:
         self.storage = storage
         self.registry = EdgeRegistry(storage)
         self.storage.initialize()
+        ml_config = get_ml_config()
+        self.ml = MLService(
+            storage,
+            ml_config.model_path,
+            ml_config.minimum_samples,
+            ml_config.model_version,
+        ) if ml_config.enabled else None
+        self._logger = configure_logging()
 
     def health(self) -> dict[str, Any]:
         self.storage.initialize()
@@ -46,6 +57,11 @@ class HubService:
     def ingest(self, record: TelemetryRecord) -> bool:
         inserted = self.storage.insert_telemetry(record)
         self.registry.touch(record.sensor_id)
+        if self.ml is not None:
+            try:
+                self.ml.analyze_and_store(record)
+            except Exception:
+                self._logger.exception("ML analysis failed for telemetry %s", record.record_id)
         return inserted
 
     def edges(self) -> list[EdgeInfo]:

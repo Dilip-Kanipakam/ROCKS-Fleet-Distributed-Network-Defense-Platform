@@ -52,4 +52,17 @@ Packet capture and parsing are implemented in the Edge observation layer, while 
 
 Chunk 4 adds the ROCKS Hub API as the central ingestion boundary. It validates the existing telemetry schema, authenticates registered Edge sensors with hashed API keys, stores records in a dedicated indexed SQLite database, and provides health, query, registry, and statistics endpoints. The Edge sender uses the existing local buffer and removes records only after acknowledgement.
 
-The Hub does not perform packet capture. ML, anomaly scoring, retention decisions, and the Command Center remain future layers.
+The Hub does not perform packet capture. The Command Center remains a future layer.
+
+Chunk 5 adds the local ML layer after Hub storage:
+
+```text
+Telemetry
+  -> historical baseline
+  -> time-aware expected traffic
+  -> actual versus expected deviation
+  -> anomaly score
+  -> retention score and LOW/MEDIUM/HIGH storage priority
+```
+
+The model uses existing behavior-summary fields and time-of-day/day-of-week features. It identifies behavior that differs from the learned baseline; it does not prove that an attack occurred. A new deployment needs enough historical telemetry before the baseline is meaningful.

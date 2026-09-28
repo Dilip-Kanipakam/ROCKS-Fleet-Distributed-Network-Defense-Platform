@@ -27,6 +27,9 @@ storage:
 
 ml:
   enabled: false
+  model_path: data/ml/rocks_baseline.joblib
+  minimum_samples: 20
+  model_version: rocks-baseline-v1
 
 alerts:
   enabled: false

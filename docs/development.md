@@ -36,10 +36,11 @@ The project is intentionally planned in chunks so the architecture remains coher
 
 ## Chunk 5: ML baseline, anomaly scoring, and retention scoring
 
-- learning time-dependent baselines
-- unusual traffic spike detection
-- anomaly score generation
-- telemetry retention priority support to reduce storage use
+- local time-aware baseline learning from historical behavior summaries
+- expected traffic estimation and bounded anomaly scoring
+- LOW/MEDIUM/HIGH retention prioritization
+- explicit training and lightweight inference
+- no destructive deletion or attack classification
 
 ## Chunk 6: Safe traffic/anomaly simulator
 
