@@ -142,6 +142,123 @@ class HubStorage:
             row = connection.execute("SELECT payload_json FROM telemetry WHERE id = ?", (telemetry_id,)).fetchone()
         return telemetry_from_json(row[0]) if row else None
 
+    def telemetry_context(
+        self,
+        *,
+        device_id: str | None = None,
+        source_ip: str | None = None,
+        sensor_id: str | None = None,
+        event_type: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        telemetry_id: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return a bounded metadata-only telemetry context for investigation."""
+
+        anchor: TelemetryRecord | None = None
+        if telemetry_id:
+            anchor = self.get_telemetry(telemetry_id)
+            if anchor is None:
+                return {"trigger": None, "related": []}
+            device_id = device_id or anchor.device_id
+            anchor_payload = anchor.payload
+            source = anchor_payload.get("source") if isinstance(anchor_payload.get("source"), dict) else {}
+            source_ip = source_ip or source.get("ip") or anchor_payload.get("source_ip")
+            sensor_id = sensor_id or anchor.sensor_id
+
+        if not device_id and not source_ip and not telemetry_id:
+            raise ValueError("device_id or source_ip is required for telemetry context")
+
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        identity_clauses: list[str] = []
+        if device_id:
+            identity_clauses.append("device_id = ?")
+            parameters.append(device_id)
+        if source_ip:
+            identity_clauses.extend(
+                [
+                    "json_extract(payload_json, '$.payload.source.ip') = ?",
+                    "json_extract(payload_json, '$.payload.source_ip') = ?",
+                    "(event_type = 'BEHAVIOR_SUMMARY' AND device_id LIKE ?)",
+                ]
+            )
+            parameters.extend([source_ip, source_ip, f"{source_ip}|%"])
+        if identity_clauses:
+            clauses.append("(" + " OR ".join(identity_clauses) + ")")
+        else:
+            clauses.append("id = ?")
+            parameters.append(telemetry_id)
+        for column, value in (("sensor_id", sensor_id), ("event_type", event_type)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                parameters.append(value)
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            parameters.append(since)
+        if until is not None:
+            clauses.append("timestamp <= ?")
+            parameters.append(until)
+        bounded_limit = min(max(int(limit), 1), 100)
+        parameters.append(bounded_limit)
+        query = (
+            "SELECT payload_json FROM telemetry WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY timestamp DESC, id DESC LIMIT ?"
+        )
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        records = [telemetry_from_json(row[0]) for row in rows]
+        return {
+            "trigger": self._context_item(anchor) if anchor else None,
+            "related": [self._context_item(record) for record in records],
+        }
+
+    @staticmethod
+    def _context_item(record: TelemetryRecord) -> dict[str, Any]:
+        payload = record.payload
+        source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+        destination = payload.get("destination") if isinstance(payload.get("destination"), dict) else {}
+        device_id = record.device_id
+        device_source_ip = device_id.split("|", 1)[0] if device_id and "|" in device_id else None
+        allowed_fields = (
+            "packet_count",
+            "bytes_sent",
+            "bytes_received",
+            "connection_duration_ms",
+            "request_count",
+            "failure_count",
+            "window_seconds",
+            "traffic_rate",
+            "request_rate",
+            "connection_count",
+            "active_connections",
+            "unique_destination_ip_count",
+            "unique_destination_port_count",
+            "repeated_destination_count",
+            "dns_request_count",
+            "dns_failure_count",
+            "reconnect_count",
+            "connection_failure_count",
+        )
+        item: dict[str, Any] = {
+            "telemetry_id": record.record_id,
+            "schema_version": record.schema_version,
+            "timestamp": record.timestamp,
+            "sensor_id": record.sensor_id,
+            "device_id": record.device_id,
+            "event_type": record.event_type,
+            "source_ip": source.get("ip", payload.get("source_ip", device_source_ip)),
+            "source_port": source.get("port", payload.get("source_port")),
+            "destination_ip": destination.get("ip", payload.get("destination_ip")),
+            "destination_port": destination.get("port", payload.get("destination_port")),
+            "protocol": payload.get("protocol"),
+        }
+        item.update({key: payload[key] for key in allowed_fields if key in payload})
+        return item
+
     def query_telemetry(self, *, sensor_id: str | None = None, device_id: str | None = None, event_type: str | None = None, limit: int = 100) -> list[TelemetryRecord]:
         self.initialize()
         clauses: list[str] = []
@@ -242,6 +359,8 @@ class HubStorage:
             payload = record.payload
             source = payload.get("source", {}) if isinstance(payload.get("source"), dict) else {}
             destination = payload.get("destination", {}) if isinstance(payload.get("destination"), dict) else {}
+            byte_values = [payload.get("bytes_sent"), payload.get("bytes_received")]
+            known_byte_values = [value for value in byte_values if isinstance(value, (int, float))]
             result.append(
                 {
                     "timestamp": row[1],
@@ -251,7 +370,7 @@ class HubStorage:
                     "source_ip": source.get("ip", payload.get("source_ip")),
                     "destination_ip": destination.get("ip", payload.get("destination_ip")),
                     "protocol": payload.get("protocol"),
-                    "bytes": payload.get("bytes_sent", 0) + payload.get("bytes_received", 0),
+                    "bytes": sum(known_byte_values) if known_byte_values else None,
                     "telemetry_id": record.record_id,
                 }
             )

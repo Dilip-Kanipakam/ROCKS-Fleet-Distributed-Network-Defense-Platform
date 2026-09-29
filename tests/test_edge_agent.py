@@ -121,3 +121,23 @@ def test_agent_emits_connection_for_idle_expired_flow_and_not_fake_reconnect(tmp
     generated = agent.flush_features()
     assert any(record.event_type == "BEHAVIOR_SUMMARY" for record in generated)
     assert agent.buffer.size() == agent.storage.count()
+
+
+def test_periodic_flush_emits_idle_expired_flow_without_new_packet(tmp_path):
+    agent = EdgeAgent(
+        EdgeAgentConfig(
+            sensor_id="EDGE-IDLE",
+            database_path=tmp_path / "telemetry.db",
+            buffer_path=tmp_path / "buffer.db",
+        )
+    )
+    agent.process_packet(_wire_packet("192.0.2.10", "198.51.100.20", 1_000.0, TCP(sport=40000, dport=443, flags="S")))
+    with agent._lock:
+        agent._packets.clear()
+
+    expired = agent.flush_features()
+    connections = [record for record in expired if record.event_type == "CONNECTION"]
+    assert len(connections) == 1
+    assert connections[0].payload["packet_count"] == 1
+    assert agent.storage.count() == 1
+    assert agent.buffer.size() == 1

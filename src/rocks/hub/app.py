@@ -75,6 +75,33 @@ def create_app(database_path: str | None = None) -> FastAPI:
         authenticate_query(authorization)
         return service.storage.query_telemetry(sensor_id=sensor_id, device_id=device_id, event_type=event_type, limit=limit)
 
+    @app.get("/api/v1/telemetry/context")
+    def telemetry_context(
+        authorization: str | None = Header(default=None),
+        device_id: str | None = None,
+        source_ip: str | None = None,
+        sensor_id: str | None = None,
+        event_type: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        telemetry_id: str | None = None,
+        limit: int = Query(default=50, ge=1, le=100),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            return service.storage.telemetry_context(
+                device_id=device_id,
+                source_ip=source_ip,
+                sensor_id=sensor_id,
+                event_type=event_type,
+                since=since,
+                until=until,
+                telemetry_id=telemetry_id,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/v1/telemetry/{telemetry_id}", response_model=TelemetryResponse)
     def get_telemetry(telemetry_id: str, authorization: str | None = Header(default=None)) -> TelemetryRecord:
         authenticate_query(authorization)

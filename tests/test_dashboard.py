@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 from rocks.dashboard.auth import hash_password
 from rocks.edge.features import TrafficFeatures
 from rocks.edge.telemetry import behavior_summary_telemetry, telemetry_to_dict
+from rocks.edge.flow import FlowRecord
+from rocks.edge.telemetry import connection_telemetry
 from rocks.hub.app import create_app
 from rocks.ml.analysis import analyze_behavior_summary
 
@@ -121,3 +123,19 @@ def test_alerts_api_returns_investigation_alerts(tmp_path, monkeypatch):
     response = client.get("/api/v1/dashboard/alerts")
     assert response.status_code == 200
     assert response.json()[0]["alert_type"] == "POTENTIAL_ANOMALY"
+
+
+def test_dashboard_telemetry_handles_connection_unknown_received_bytes(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    service = client.app.state.hub_service
+    _edge, api_key = service.registry.register("EDGE-CONNECTION")
+    record = connection_telemetry(
+        FlowRecord("192.0.2.1", "198.51.100.1", 1234, 443, "TCP", 10.0, 12.0, 2, 150),
+        "EDGE-CONNECTION",
+        "DEVICE-1",
+        bytes_received=None,
+    )
+    service.storage.insert_telemetry(record)
+    result = client.app.state.dashboard_service.telemetry(limit=10)
+    assert result[0]["bytes"] == 150

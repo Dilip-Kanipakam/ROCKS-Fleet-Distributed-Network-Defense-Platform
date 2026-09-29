@@ -7,12 +7,15 @@ ROCKS Hub is the central self-hosted telemetry backend introduced in Chunk 4. It
 - `GET /api/v1/health`
 - `POST /api/v1/telemetry`
 - `GET /api/v1/telemetry`
+- `GET /api/v1/telemetry/context`
 - `GET /api/v1/telemetry/{telemetry_id}`
 - `GET /api/v1/edges`
 - `GET /api/v1/edges/{sensor_id}`
 - `GET /api/v1/stats`
 
-Only `GET /api/v1/health` is public. Telemetry ingestion and query endpoints (`GET /api/v1/telemetry`, `GET /api/v1/telemetry/{telemetry_id}`, `GET /api/v1/edges`, `GET /api/v1/edges/{sensor_id}`, and `GET /api/v1/stats`) require `Authorization: Bearer <registered-edge-api-key>`.
+Only `GET /api/v1/health` is public. Telemetry ingestion and query endpoints (`GET /api/v1/telemetry`, `GET /api/v1/telemetry/context`, `GET /api/v1/telemetry/{telemetry_id}`, `GET /api/v1/edges`, `GET /api/v1/edges/{sensor_id}`, and `GET /api/v1/stats`) require `Authorization: Bearer <registered-edge-api-key>`.
+
+The bounded metadata-only context query accepts `telemetry_id` or an identity filter (`device_id` or `source_ip`), with optional `sensor_id`, `event_type`, `since`, and `until` filters. It returns the triggering record when anchored by `telemetry_id` plus up to 100 newest matching records; its default limit is 50. It does not return packet payloads or credentials.
 
 Edge API keys are generated during local registration and stored only as salted PBKDF2 hashes. Plaintext keys are displayed only by the registration command and are never returned by API responses. Authentication failures use a generic `401 Invalid credentials` response.
 

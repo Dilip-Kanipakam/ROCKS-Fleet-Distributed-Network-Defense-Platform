@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import signal
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -83,14 +84,18 @@ class EdgeAgent:
 
     def flush_features(self) -> list[TelemetryRecord]:
         with self._lock:
-            if not self._packets:
-                return []
             packets = list(self._packets)
             self._packets.clear()
+            expired_flows = self.flow_tracker.expire(time.time())
+            expired_records = [self._connection_record(flow) for flow in expired_flows]
+            for flow in expired_flows:
+                self._flow_source_macs.pop(_flow_key(flow), None)
             flows = self.flow_tracker.snapshot()
-        records: list[TelemetryRecord] = self._dns_records(packets)
+        records: list[TelemetryRecord] = expired_records + self._dns_records(packets)
         for record in records:
             self._store_local(record)
+        if not packets:
+            return records
         for features in aggregate_features_by_source(
             packets,
             flows,

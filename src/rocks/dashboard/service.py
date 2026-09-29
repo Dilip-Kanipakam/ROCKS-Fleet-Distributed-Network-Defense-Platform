@@ -50,6 +50,9 @@ class DashboardService:
     def telemetry(self, limit: int = 50, event_type: str | None = None, sensor_id: str | None = None) -> list[dict[str, Any]]:
         return self.storage.dashboard_telemetry(limit=limit, event_type=event_type, sensor_id=sensor_id)
 
+    def telemetry_context(self, telemetry_id: str, limit: int = 50) -> dict[str, Any]:
+        return self.storage.telemetry_context(telemetry_id=telemetry_id, limit=limit)
+
     def events(self, limit: int = 50) -> list[dict[str, Any]]:
         return self.storage.recent_analysis(limit)
 

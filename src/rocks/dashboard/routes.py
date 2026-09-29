@@ -26,11 +26,13 @@ class DashboardRoutes:
         router.add_api_route("/dashboard", self.dashboard, methods=["GET"])
         router.add_api_route("/dashboard/edges", self.edges_page, methods=["GET"])
         router.add_api_route("/dashboard/telemetry", self.telemetry_page, methods=["GET"])
+        router.add_api_route("/dashboard/telemetry/{telemetry_id}", self.telemetry_context_page, methods=["GET"])
         router.add_api_route("/dashboard/events", self.events_page, methods=["GET"])
         router.add_api_route("/dashboard/alerts", self.alerts_page, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/summary", self.summary_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/edges", self.edges_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/telemetry", self.telemetry_api, methods=["GET"])
+        router.add_api_route("/api/v1/dashboard/telemetry/{telemetry_id}/context", self.telemetry_context_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/events", self.events_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/traffic", self.traffic_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/alerts", self.alerts_api, methods=["GET"])
@@ -81,6 +83,15 @@ class DashboardRoutes:
             return redirect
         return self.templates.TemplateResponse(request=request, name="telemetry.html", context={"telemetry": self.service.telemetry()})
 
+    def telemetry_context_page(self, request: Request, telemetry_id: str):
+        redirect = self._page_auth(request)
+        if redirect:
+            return redirect
+        context = self.service.telemetry_context(telemetry_id)
+        if context["trigger"] is None:
+            raise HTTPException(status_code=404, detail="Telemetry record not found")
+        return self.templates.TemplateResponse(request=request, name="telemetry_context.html", context={"context": context})
+
     def events_page(self, request: Request):
         redirect = self._page_auth(request)
         if redirect:
@@ -104,6 +115,13 @@ class DashboardRoutes:
     def telemetry_api(self, request: Request, limit: int = Query(50, ge=1, le=100), event_type: str | None = None, sensor_id: str | None = None):
         self._api_auth(request)
         return JSONResponse(self.service.telemetry(limit, event_type, sensor_id))
+
+    def telemetry_context_api(self, request: Request, telemetry_id: str, limit: int = Query(50, ge=1, le=100)):
+        self._api_auth(request)
+        context = self.service.telemetry_context(telemetry_id, limit)
+        if context["trigger"] is None:
+            raise HTTPException(status_code=404, detail="Telemetry record not found")
+        return JSONResponse(context)
 
     def events_api(self, request: Request, limit: int = Query(50, ge=1, le=100)):
         self._api_auth(request)

@@ -5,7 +5,14 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from rocks.edge.features import TrafficFeatures
-from rocks.edge.telemetry import behavior_summary_telemetry, telemetry_to_dict
+from rocks.edge.flow import FlowRecord
+from rocks.edge.telemetry import (
+    behavior_summary_telemetry,
+    connection_telemetry,
+    dns_telemetry,
+    reconnect_telemetry,
+    telemetry_to_dict,
+)
 from rocks.hub.app import create_app
 from rocks.hub.registry import EdgeRegistry
 from rocks.hub.storage import HubStorage
@@ -86,3 +93,29 @@ def test_query_endpoints_require_registered_edge_key(tmp_path):
         assert invalid.json()["detail"] == "Invalid credentials"
         valid = client.get(endpoint, headers={"Authorization": f"Bearer {key}"})
         assert valid.status_code == 200
+
+
+def test_hub_accepts_existing_edge_event_types(tmp_path):
+    client, key, service = client_and_key(tmp_path)
+    headers = {"Authorization": f"Bearer {key}"}
+    flow = FlowRecord("192.0.2.1", "198.51.100.1", 1234, 443, "TCP", 10.0, 12.0, 2, 150)
+    records = [
+        connection_telemetry(flow, "EDGE-01", "DEVICE-01"),
+        dns_telemetry(
+            "EDGE-01",
+            source_ip="192.0.2.1",
+            source_port=53000,
+            destination_ip="198.51.100.53",
+            destination_port=53,
+            request_count=2,
+            device_id="DEVICE-01",
+        ),
+        reconnect_telemetry("EDGE-01", reconnect_count=1, connection_failure_count=1, device_id="DEVICE-01"),
+        make_record(),
+    ]
+    for record in records:
+        response = client.post("/api/v1/telemetry", json=telemetry_to_dict(record), headers=headers)
+        assert response.status_code == 200
+    assert service.storage.count() == 4
+    for event_type in ("CONNECTION", "DNS", "RECONNECT", "BEHAVIOR_SUMMARY"):
+        assert service.storage.query_telemetry(event_type=event_type)[0].event_type == event_type

@@ -46,6 +46,8 @@ Deploy and operate Edge only on networks and systems where monitoring is authori
 
 Live telemetry uses the existing schema 1.0 builders. `BEHAVIOR_SUMMARY` is emitted per observed source IP; `bytes_sent` counts traffic from that source toward destinations and `bytes_received` counts traffic toward that source. DNS queries to destination port 53 are grouped by source/destination endpoint and transport within each flush window; failure count remains 0 because current metadata does not establish DNS response failures. Expired idle flows produce `CONNECTION` records with directional sent bytes and unknown received bytes. `RECONNECT` is not emitted: this passive packet metadata does not reliably distinguish reconnection from retries or ordinary connection behavior. No event type confirms an attack.
 
+Each flush persists and buffers the generated `BEHAVIOR_SUMMARY` and aggregated DNS events. A flow that expires after the existing idle timeout is emitted once as a `CONNECTION` event; periodic flush checks expiration even during quiet periods. The current parser does not provide reliable connection-failure evidence, so reconnect and failure counters are not fabricated.
+
 The operational agent connects the existing capture, parser, flow, feature, telemetry, local SQLite, persistent buffer, and Hub sender components:
 
 ```text
