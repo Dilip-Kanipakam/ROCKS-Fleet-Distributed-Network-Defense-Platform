@@ -16,6 +16,8 @@ edge:
 
 hub:
   enabled: false
+  host: 127.0.0.1
+  port: 8000
   url: ""
   api_key: ""
   timeout_seconds: 10
@@ -38,6 +40,8 @@ ml:
 
 dashboard:
   enabled: true
+  host: 127.0.0.1
+  port: 8000
   session_secret: ""
   admin_username: ""
   admin_password_hash: ""

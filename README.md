@@ -86,6 +86,22 @@ Optional scenario generation is available with `rocks simulate normal`, `rocks s
 
 Run the operational Edge agent with `rocks edge run --interface <interface> --hub-url <url> --api-key <key> --sensor-id <id>`. Use `rocks edge run --dry-run` for a safe local check. A managed switch must be configured to mirror selected ports or VLAN traffic to the Edge through a SPAN destination port; an ordinary switch connection does not expose all traffic.
 
+## Setup wizard
+
+Use the built-in CLI configuration wizard for first-time deployment setup:
+
+```bash
+rocks setup --mode all-in-one --non-interactive \
+  --sensor-id ROCKS-EDGE-01 \
+  --interface eth0 \
+  --hub-url http://127.0.0.1:8000 \
+  --api-key <hub-key> \
+  --dashboard-username admin \
+  --dashboard-password <strong-password>
+```
+
+The interactive form is available with just `rocks setup`. It asks only the values relevant to the selected deployment mode and writes the local YAML configuration used by the existing CLI. It does not configure switch port mirroring, VLAN access, or any other physical network infrastructure.
+
 ## Python virtual environment
 
 Create a virtual environment from the project root:

@@ -10,12 +10,58 @@ except ImportError:  # pragma: no cover
     yaml = None
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "config.example.yaml"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CONFIG_DIR = PROJECT_ROOT / "config"
+DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.yaml"
+DEFAULT_CONFIG_TEMPLATE_PATH = CONFIG_DIR / "config.example.yaml"
+
+
+def build_default_config() -> dict[str, Any]:
+    template_path = DEFAULT_CONFIG_TEMPLATE_PATH
+    if template_path.exists():
+        return load_config(template_path)
+
+    return {
+        "project": {"name": "ROCKS Fleet", "version": "0.1.0"},
+        "deployment": {"mode": "all-in-one"},
+        "edge": {
+            "enabled": True,
+            "sensor_id": "ROCKS-EDGE-01",
+            "interface": "",
+            "capture_mode": "live",
+            "hub_url": "",
+            "send_interval_seconds": 5,
+            "buffer_limit": 10000,
+        },
+        "hub": {
+            "enabled": False,
+            "url": "",
+            "api_key": "",
+            "timeout_seconds": 10,
+            "edge_liveness_timeout_seconds": 60,
+        },
+        "telemetry": {"interval_seconds": 60, "window_seconds": 60},
+        "storage": {"database": "", "buffer": "", "hub_database": ""},
+        "ml": {"enabled": False, "model_path": "data/ml/rocks_baseline.joblib", "minimum_samples": 20, "model_version": "rocks-baseline-v1"},
+        "dashboard": {"enabled": True, "session_secret": "", "admin_username": "", "admin_password_hash": ""},
+        "alerts": {"enabled": True, "anomaly_threshold": 0.70, "high_retention_threshold": 0.70},
+        "email": {"enabled": False, "smtp_host": "", "smtp_port": 587, "username": "", "password": "", "from": "", "to": ""},
+    }
+
+
+def write_config(config: dict[str, Any], config_path: str | Path | None = None) -> Path:
+    path = Path(config_path) if config_path is not None else Path(get_config_path())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to write configuration files.")
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(config, handle, sort_keys=False, default_flow_style=False)
+    return path
 
 
 def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
     if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
+        config_path = get_config_path()
 
     path = Path(config_path)
     if not path.exists():
@@ -37,7 +83,9 @@ def get_config_path() -> str:
     env_path = os.getenv("ROCKS_CONFIG_PATH")
     if env_path:
         return env_path
-    return str(DEFAULT_CONFIG_PATH)
+    if DEFAULT_CONFIG_PATH.exists():
+        return str(DEFAULT_CONFIG_PATH)
+    return str(DEFAULT_CONFIG_TEMPLATE_PATH)
 
 
 def get_storage_path(config_path: str | Path | None = None) -> Path:

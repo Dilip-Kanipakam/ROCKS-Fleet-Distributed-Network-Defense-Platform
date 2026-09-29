@@ -50,5 +50,36 @@ def test_parser_has_expected_commands():
         "config",
         "logs",
         "test",
+        "setup",
     ]
     assert all(choice in parser.format_help() for choice in choices)
+
+
+def test_setup_writes_edge_configuration(tmp_path):
+    config_path = tmp_path / "rocks-config.yaml"
+
+    exit_code = main(
+        [
+            "setup",
+            "--config-path",
+            str(config_path),
+            "--mode",
+            "edge",
+            "--sensor-id",
+            "ROCKS-EDGE-SETUP",
+            "--interface",
+            "eth0",
+            "--hub-url",
+            "http://127.0.0.1:8000",
+            "--api-key",
+            "demo-api-key",
+            "--non-interactive",
+        ]
+    )
+
+    assert exit_code == 0
+    config = load_config(config_path)
+    assert config["deployment"]["mode"] == "edge"
+    assert config["edge"]["sensor_id"] == "ROCKS-EDGE-SETUP"
+    assert config["edge"]["hub_url"] == "http://127.0.0.1:8000"
+    assert config["hub"]["api_key"] == "demo-api-key"
