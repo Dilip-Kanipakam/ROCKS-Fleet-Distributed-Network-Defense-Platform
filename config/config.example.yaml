@@ -62,3 +62,7 @@ email:
   password: ""
   from: ""
   to: ""
+  minimum_severity: HIGH
+  starttls: true
+  use_ssl: false
+  timeout_seconds: 5

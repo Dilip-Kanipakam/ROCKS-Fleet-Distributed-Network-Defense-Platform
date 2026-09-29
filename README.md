@@ -80,7 +80,7 @@ rocks demo
 
 The demo creates 20 historical baseline records in a temporary SQLite database, trains the local model, compares normal traffic with a synthetic high-traffic spike, and creates a HIGH investigation alert. ML needs historical baseline data before it becomes ready. An anomaly indicates behavior that differs from the learned baseline; it does not prove an attack.
 
-Optional scenario generation is available with `rocks simulate normal`, `rocks simulate anomaly`, and `rocks simulate mixed`. Dashboard alerts are investigation-only. Email is disabled and not implemented in this MVP.
+Optional scenario generation is available with `rocks simulate normal`, `rocks simulate anomaly`, and `rocks simulate mixed`. Dashboard alerts are investigation-only. Optional email notifications are disabled by default; ROCKS continues storing alerts if SMTP is unavailable.
 
 ## Live Edge
 
@@ -168,6 +168,20 @@ Health validates the generated config, reports configured systemd service states
 `HEALTHY` means all applicable required checks passed. `DEGRADED` means at least one applicable check is warning or a required service state is unknown. `UNHEALTHY` means at least one check reports an error. Components not configured for the deployment mode are `NOT_APPLICABLE` and do not affect overall health. Exit codes are `0` healthy, `1` degraded or unhealthy, and `2` invalid or unavailable configuration.
 
 Service state and telemetry health are separate: an active Edge or Hub process can still have stale or absent telemetry. For a stopped or failed service, check `rocks service status` and the matching `journalctl -u rocks-edge.service` or `journalctl -u rocks-hub.service`. For an unavailable Hub API, check Hub service state, bind URL/port, and connectivity. For stale telemetry, check Edge delivery and verify the configured interface receives traffic from a SPAN/port-mirror session or TAP. ROCKS health diagnoses ROCKS infrastructure only; a healthy result does not mean the monitored network is healthy. Installing ROCKS does not itself provide campus-wide visibility.
+
+## Email Notifications
+
+Email is optional and disabled by default. Configure the existing `email` section in the owner-only `config/config.yaml`, or use `ROCKS_EMAIL_ENABLED=true` with `ROCKS_SMTP_HOST`, `ROCKS_SMTP_PORT`, `ROCKS_SMTP_USERNAME`, `ROCKS_SMTP_PASSWORD`, `ROCKS_SMTP_FROM`, and `ROCKS_SMTP_TO`. Environment values override YAML; with systemd, the generated unit optionally reads the local ignored `.env` file. Keep that file owner-only (`chmod 600 .env`) and never put real credentials in tracked files. For interactive shell use, export the variables in that shell. STARTTLS on port 587 is the default. Implicit TLS is available with `use_ssl: true` and `starttls: false`; certificate verification stays enabled.
+
+By default, only existing `HIGH` alerts trigger messages. Set `minimum_severity: WARNING` to include both existing `WARNING` and `HIGH` severities. Each newly inserted alert receives at most one bounded SMTP attempt. Views, acknowledgements, resolutions, and duplicate alert processing never resend. Email failure records `FAILED` with a safe reason code, leaves the alert `OPEN`, and does not interrupt alert storage. SMTP timeout defaults to five seconds and is capped at 30 seconds.
+
+Test delivery only when explicitly requested:
+
+```bash
+rocks alerts email-test
+```
+
+This sends a test message only when notifications are enabled and does not create an alert. The dashboard shows `Sent`, `Failed`, `Not sent`, or `Not configured`; it does not expose SMTP credentials. Troubleshoot with `journalctl -u rocks-hub.service`. Email is not required for telemetry analysis or alert creation.
 
 ## Python virtual environment
 

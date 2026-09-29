@@ -41,6 +41,8 @@ from rocks.dashboard.config import get_dashboard_config
 from rocks.paths import data_dir
 from rocks.demo import run_demo as run_mvp_demo
 from rocks.alerts.config import get_alert_config
+from rocks.alerts.config import get_email_config
+from rocks.alerts.email import EmailNotificationService, NotificationError
 from rocks.simulator.generator import Scenario, generate_records
 from rocks.service_manager import ServiceManager, ServiceManagerError
 from rocks.health import HealthChecker, HealthStatus
@@ -160,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     alerts_subparsers = alerts_parser.add_subparsers(dest="alerts_command")
     alerts_subparsers.add_parser("status", help="show alert engine status")
     alerts_subparsers.add_parser("list", help="list recent alerts")
+    alerts_subparsers.add_parser("email-test", help="send an explicitly requested SMTP test message")
     demo_parser = subparsers.add_parser("demo", help="run the complete safe MVP demonstration")
     demo_parser.set_defaults(demo_command=True)
     return parser
@@ -733,6 +736,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "alerts":
+        if args.alerts_command == "email-test":
+            try:
+                result = EmailNotificationService(get_email_config()).send_test()
+            except NotificationError as exc:
+                print(f"SMTP test: FAILED ({exc.reason})", file=sys.stderr)
+                return 1
+            except (OSError, RuntimeError, TypeError, ValueError):
+                print("SMTP test: FAILED (smtp_configuration_invalid)", file=sys.stderr)
+                return 1
+            print("Email notifications: DISABLED" if result.status == "DISABLED" else f"SMTP test: {result.message}")
+            return 0
         storage = HubStorage(get_hub_config().database_path)
         if args.alerts_command == "status":
             counts = storage.alert_counts()

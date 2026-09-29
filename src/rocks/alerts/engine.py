@@ -23,6 +23,10 @@ class Alert:
     created_at: str | None = None
     acknowledged_at: str | None = None
     resolved_at: str | None = None
+    notification_status: str = "NOT_SENT"
+    notification_sent_at: str | None = None
+    notification_attempt_count: int = 0
+    notification_error: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

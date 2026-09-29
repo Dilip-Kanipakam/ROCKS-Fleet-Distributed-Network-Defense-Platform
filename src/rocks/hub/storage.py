@@ -78,6 +78,11 @@ class HubStorage:
                     created_at TEXT NOT NULL,
                     acknowledged_at TEXT,
                     resolved_at TEXT,
+                    notification_status TEXT NOT NULL DEFAULT 'NOT_SENT',
+                    notification_sent_at TEXT,
+                    notification_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    notification_error TEXT,
+                    notification_claimed_at TEXT,
                     UNIQUE (telemetry_id, alert_type)
                 );
                 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
@@ -93,6 +98,16 @@ class HubStorage:
             connection.execute("ALTER TABLE alerts ADD COLUMN acknowledged_at TEXT")
         if "resolved_at" not in columns:
             connection.execute("ALTER TABLE alerts ADD COLUMN resolved_at TEXT")
+        notification_columns = {
+            "notification_status": "TEXT NOT NULL DEFAULT 'NOT_SENT'",
+            "notification_sent_at": "TEXT",
+            "notification_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "notification_error": "TEXT",
+            "notification_claimed_at": "TEXT",
+        }
+        for name, definition in notification_columns.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE alerts ADD COLUMN {name} {definition}")
         connection.execute("UPDATE alerts SET status = 'OPEN' WHERE status IS NULL OR status = ''")
 
     def register_edge(self, sensor_id: str, name: str, api_key_hash: str) -> EdgeInfo:
@@ -466,13 +481,16 @@ class HubStorage:
                 INSERT OR IGNORE INTO alerts
                 (alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type,
                  severity, anomaly_score, retention_score, message, status, created_at,
-                 acknowledged_at, resolved_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 acknowledged_at, resolved_at, notification_status, notification_sent_at,
+                 notification_attempt_count, notification_error, notification_claimed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (alert.alert_id, alert.telemetry_id, alert.sensor_id, alert.device_id,
                  alert.timestamp, alert.alert_type, alert.severity, alert.anomaly_score,
                  alert.retention_score, alert.message, alert.status,
-                 alert.created_at or _utc_now(), alert.acknowledged_at, alert.resolved_at),
+                 alert.created_at or _utc_now(), alert.acknowledged_at, alert.resolved_at,
+                 alert.notification_status, alert.notification_sent_at,
+                 alert.notification_attempt_count, alert.notification_error, None),
             )
         return cursor.rowcount == 1
 
@@ -480,7 +498,7 @@ class HubStorage:
         self.initialize()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at FROM alerts WHERE alert_id = ?",
+                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at, notification_status, notification_sent_at, notification_attempt_count, notification_error FROM alerts WHERE alert_id = ?",
                 (alert_id,),
             ).fetchone()
         if row is None:
@@ -500,7 +518,41 @@ class HubStorage:
             created_at=row["created_at"],
             acknowledged_at=row["acknowledged_at"],
             resolved_at=row["resolved_at"],
+            notification_status=row["notification_status"],
+            notification_sent_at=row["notification_sent_at"],
+            notification_attempt_count=row["notification_attempt_count"],
+            notification_error=row["notification_error"],
         )
+
+    def claim_alert_notification(self, alert_id: str) -> bool:
+        """Atomically allow at most one notification attempt for an alert."""
+        self.initialize()
+        claimed_at = _utc_now()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE alerts
+                SET notification_attempt_count = 1, notification_claimed_at = ?
+                WHERE alert_id = ? AND notification_attempt_count = 0
+                  AND notification_status = 'NOT_SENT' AND notification_claimed_at IS NULL
+                """,
+                (claimed_at, alert_id),
+            )
+        return cursor.rowcount == 1
+
+    def finish_alert_notification(self, alert_id: str, *, status: str, error: str | None = None) -> None:
+        if status not in {"SENT", "FAILED"}:
+            raise ValueError("notification status must be SENT or FAILED")
+        self.initialize()
+        sent_at = _utc_now() if status == "SENT" else None
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE alerts SET notification_status = ?, notification_sent_at = ?, notification_error = ?
+                WHERE alert_id = ? AND notification_claimed_at IS NOT NULL
+                """,
+                (status, sent_at, error, alert_id),
+            )
 
     def update_alert_status(self, alert_id: str, new_status: str) -> Alert | None:
         self.initialize()
@@ -534,7 +586,7 @@ class HubStorage:
         self.initialize()
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at FROM alerts ORDER BY timestamp DESC LIMIT ?",
+                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at, notification_status, notification_sent_at, notification_attempt_count, notification_error FROM alerts ORDER BY timestamp DESC LIMIT ?",
                 (min(max(limit, 1), 100),),
             ).fetchall()
         return [dict(row) for row in rows]

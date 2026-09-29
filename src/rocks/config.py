@@ -47,7 +47,19 @@ def build_default_config() -> dict[str, Any]:
         "ml": {"enabled": False, "model_path": "data/ml/rocks_baseline.joblib", "minimum_samples": 20, "model_version": "rocks-baseline-v1"},
         "dashboard": {"enabled": True, "session_secret": "", "admin_username": "", "admin_password_hash": ""},
         "alerts": {"enabled": True, "anomaly_threshold": 0.70, "high_retention_threshold": 0.70},
-        "email": {"enabled": False, "smtp_host": "", "smtp_port": 587, "username": "", "password": "", "from": "", "to": ""},
+        "email": {
+            "enabled": False,
+            "smtp_host": "",
+            "smtp_port": 587,
+            "username": "",
+            "password": "",
+            "from": "",
+            "to": "",
+            "minimum_severity": "HIGH",
+            "starttls": True,
+            "use_ssl": False,
+            "timeout_seconds": 5,
+        },
     }
 
 

@@ -4,6 +4,7 @@ from typing import Any
 
 from rocks.hub.storage import HubStorage
 from rocks.ml.config import get_ml_config
+from rocks.alerts.config import get_email_config
 
 
 class DashboardService:
@@ -60,4 +61,15 @@ class DashboardService:
         return self.storage.traffic_points(limit)
 
     def alerts(self, limit: int = 50) -> list[dict[str, Any]]:
-        return self.storage.recent_alerts(limit)
+        alerts = self.storage.recent_alerts(limit)
+        email_enabled = get_email_config().enabled
+        for alert in alerts:
+            status = alert.get("notification_status", "NOT_SENT")
+            if status == "SENT":
+                label = "Sent"
+            elif status == "FAILED":
+                label = "Failed"
+            else:
+                label = "Not sent" if email_enabled else "Not configured"
+            alert["notification_label"] = label
+        return alerts

@@ -92,6 +92,7 @@ def render_units(
             f"User={user}\n"
             f"WorkingDirectory={_systemd_path(root)}\n"
             f"Environment=ROCKS_CONFIG_PATH={_systemd_quote(active_config_path)}\n"
+            f"EnvironmentFile=-{_systemd_path(root / '.env')}\n"
             f"ExecStart={_systemd_quote(python)} -m rocks {command}\n"
             "Restart=on-failure\n"
             "RestartSec=5s\n"

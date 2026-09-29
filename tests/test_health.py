@@ -64,6 +64,7 @@ def _config(tmp_path, mode="all-in-one"):
             "hub_database": str(tmp_path / "hub.db"),
         },
         "alerts": {"enabled": True},
+        "email": {"enabled": True, "username": "SMTP-PRIVATE-USER", "password": "SMTP-PRIVATE-PASSWORD"},
         "health": {"telemetry_freshness_seconds": 300},
     }
 
@@ -263,6 +264,8 @@ def test_health_output_never_displays_secrets(tmp_path, monkeypatch, capsys):
         "SENSITIVE-API-KEY",
         "SENSITIVE-PASSWORD-HASH",
         "SENSITIVE-SESSION-SECRET",
+        "SMTP-PRIVATE-USER",
+        "SMTP-PRIVATE-PASSWORD",
         "url-user",
         "url-password",
         "URL-SECRET",

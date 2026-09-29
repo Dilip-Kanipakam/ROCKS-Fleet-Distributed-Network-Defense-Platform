@@ -19,6 +19,8 @@ The bounded metadata-only context query accepts `telemetry_id` or an identity fi
 
 Alerts carry the same metadata-only approach. Each alert records a `telemetry_id` and a lifecycle state in SQLite. The default state is `OPEN`; an administrator may move it to `ACKNOWLEDGED` and then `RESOLVED`. These transitions are validated, and a resolved alert remains an operational state value rather than a claim that an attack was confirmed.
 
+Optional email notifications are disabled by default. When enabled, only newly inserted alerts at or above `email.minimum_severity` are considered (`HIGH` by default; `WARNING` includes both current severities). SQLite records one claimed attempt per alert with state, attempt count, sent timestamp, and a safe error code. Duplicate telemetry/alert processing, dashboard views, acknowledgement, and resolution do not cause another send. SMTP failures do not change alert lifecycle or interrupt ingestion.
+
 Edge API keys are generated during local registration and stored only as salted PBKDF2 hashes. Plaintext keys are displayed only by the registration command and are never returned by API responses. Authentication failures use a generic `401 Invalid credentials` response.
 
 Hub SQLite connections use WAL mode for file-backed databases and a 5-second busy timeout. Edge liveness is derived from successful authenticated telemetry communication (`last_seen`). The configurable `hub.edge_liveness_timeout_seconds` defaults to 60 seconds. `ONLINE` means the Hub observed communication within that window; `OFFLINE` means no recent communication was observed, not that the physical sensor is definitely disconnected. The last-seen time is retained for offline sensors.
@@ -67,6 +69,8 @@ ROCKS Edge 03 -/
 ```
 
 Advanced detection and automatic response are not implemented yet. The Hub is a defensive telemetry backend and does not capture packets, scan networks, block devices, or expose database files over HTTP.
+
+Configure SMTP in the local `email` YAML section or use the `ROCKS_SMTP_*` environment overrides, especially `ROCKS_SMTP_PASSWORD` for secrets. STARTTLS with certificate verification is enabled by default; SMTP connection timeout defaults to five seconds and is capped at 30 seconds. Run `rocks alerts email-test` explicitly to test delivery without making a fake alert. It prints status/reason codes only. If delivery fails, the `OPEN` alert remains available and the Hub continues processing; examine `notification_error` in alert state and the Hub journal for diagnosis.
 
 ## ML analytics
 

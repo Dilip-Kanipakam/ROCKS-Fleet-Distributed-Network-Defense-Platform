@@ -55,8 +55,10 @@ def test_edge_unit_uses_existing_python_and_config_without_secrets(tmp_path):
     edge = units[EDGE_UNIT]
     assert "User=schooladmin" in edge
     escaped_root = str(root).replace(" ", "\\x20")
+    escaped_environment_path = str(root / ".env").replace(" ", "\\x20")
     assert f"WorkingDirectory={escaped_root}" in edge
     assert f'Environment=ROCKS_CONFIG_PATH="{config_path}"' in edge
+    assert f"EnvironmentFile=-{escaped_environment_path}" in edge
     assert f'ExecStart="{tmp_path / "venv path" / "bin" / "python"}" -m rocks edge run' in edge
     assert "Restart=on-failure" in edge
     assert "StandardOutput=journal" in edge
