@@ -27,6 +27,9 @@ telemetry:
   interval_seconds: 60
   window_seconds: 60
 
+health:
+  telemetry_freshness_seconds: 300
+
 storage:
   database: ""
   buffer: ""

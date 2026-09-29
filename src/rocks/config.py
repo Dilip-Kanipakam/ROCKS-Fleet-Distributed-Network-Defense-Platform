@@ -42,6 +42,7 @@ def build_default_config() -> dict[str, Any]:
             "edge_liveness_timeout_seconds": 60,
         },
         "telemetry": {"interval_seconds": 60, "window_seconds": 60},
+        "health": {"telemetry_freshness_seconds": 300},
         "storage": {"database": "", "buffer": "", "hub_database": ""},
         "ml": {"enabled": False, "model_path": "data/ml/rocks_baseline.joblib", "minimum_samples": 20, "model_version": "rocks-baseline-v1"},
         "dashboard": {"enabled": True, "session_secret": "", "admin_username": "", "admin_password_hash": ""},

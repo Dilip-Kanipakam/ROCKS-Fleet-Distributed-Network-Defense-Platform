@@ -153,6 +153,22 @@ journalctl -u rocks-hub.service -f
 
 To inspect unit generation without installing anything, use `rocks service generate --output-dir /tmp/rocks-units`; this works without systemd. Service management does not configure a switch SPAN session, TAP, router, firewall, or network topology. Broad Edge visibility still requires an appropriate observation point.
 
+## Health and Diagnostics
+
+Run a concise infrastructure check or request detailed diagnostics:
+
+```bash
+rocks health
+rocks health check
+rocks health verbose
+```
+
+Health validates the generated config, reports configured systemd service states, checks the Hub health endpoint and dashboard login route where applicable, performs read-only Hub/Edge SQLite probes, checks the Edge buffer, and compares the latest telemetry with the configured freshness window (`health.telemetry_freshness_seconds`, default 300 seconds). Verbose output includes selected non-secret paths, sensor ID, endpoint, capped record counts, telemetry age, and recovery hints. It never prints API keys, passwords, password hashes, session secrets, or SMTP credentials.
+
+`HEALTHY` means all applicable required checks passed. `DEGRADED` means at least one applicable check is warning or a required service state is unknown. `UNHEALTHY` means at least one check reports an error. Components not configured for the deployment mode are `NOT_APPLICABLE` and do not affect overall health. Exit codes are `0` healthy, `1` degraded or unhealthy, and `2` invalid or unavailable configuration.
+
+Service state and telemetry health are separate: an active Edge or Hub process can still have stale or absent telemetry. For a stopped or failed service, check `rocks service status` and the matching `journalctl -u rocks-edge.service` or `journalctl -u rocks-hub.service`. For an unavailable Hub API, check Hub service state, bind URL/port, and connectivity. For stale telemetry, check Edge delivery and verify the configured interface receives traffic from a SPAN/port-mirror session or TAP. ROCKS health diagnoses ROCKS infrastructure only; a healthy result does not mean the monitored network is healthy. Installing ROCKS does not itself provide campus-wide visibility.
+
 ## Python virtual environment
 
 Create a virtual environment from the project root:

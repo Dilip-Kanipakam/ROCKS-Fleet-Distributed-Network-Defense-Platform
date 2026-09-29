@@ -43,6 +43,7 @@ from rocks.demo import run_demo as run_mvp_demo
 from rocks.alerts.config import get_alert_config
 from rocks.simulator.generator import Scenario, generate_records
 from rocks.service_manager import ServiceManager, ServiceManagerError
+from rocks.health import HealthChecker, HealthStatus
 
 
 from scapy.layers.inet import IP, TCP, UDP
@@ -71,6 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("config", help="show the active configuration path")
     subparsers.add_parser("logs", help="show logging status")
     subparsers.add_parser("test", help="run the foundation test command")
+    health_parser = subparsers.add_parser("health", help="check ROCKS Fleet runtime health")
+    health_parser.add_argument("view", nargs="?", choices=["check", "verbose"], default="check")
     service_parser = subparsers.add_parser("service", help="manage ROCKS Linux systemd services")
     service_subparsers = service_parser.add_subparsers(dest="service_command")
     service_subparsers.add_parser("status", help="show installed and running service state")
@@ -487,6 +490,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "test":
         print("ROCKS Fleet foundation tests passed.")
         return 0
+
+    if args.command == "health":
+        report = HealthChecker().run()
+        print("ROCKS Fleet Health")
+        print("------------------")
+        for check in report.checks:
+            label = check.name.replace("_", " ").title()
+            label = label.replace("Api", "API").replace("Id", "ID").replace("Sqlite", "SQLite")
+            print(f"{label}: {check.status.value} - {check.message}")
+            if args.view == "verbose":
+                for key, value in check.details.items():
+                    detail_label = key.replace("_", " ").title()
+                    detail_label = detail_label.replace("Api", "API").replace("Id", "ID").replace("Sqlite", "SQLite")
+                    print(f"  {detail_label}: {value}")
+                if check.hint:
+                    print(f"  Hint: {check.hint}")
+        print(f"Overall: {report.overall.value}")
+        return report.exit_code
 
     if args.command == "service":
         manager = ServiceManager()
