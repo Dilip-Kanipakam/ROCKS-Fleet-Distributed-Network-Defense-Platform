@@ -36,6 +36,8 @@ class DashboardRoutes:
         router.add_api_route("/api/v1/dashboard/events", self.events_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/traffic", self.traffic_api, methods=["GET"])
         router.add_api_route("/api/v1/dashboard/alerts", self.alerts_api, methods=["GET"])
+        router.add_api_route("/api/v1/dashboard/alerts/{alert_id}/acknowledge", self.acknowledge_alert, methods=["POST"])
+        router.add_api_route("/api/v1/dashboard/alerts/{alert_id}/resolve", self.resolve_alert, methods=["POST"])
         return router
 
     def _page_auth(self, request: Request) -> RedirectResponse | None:
@@ -134,3 +136,25 @@ class DashboardRoutes:
     def alerts_api(self, request: Request, limit: int = Query(50, ge=1, le=100)):
         self._api_auth(request)
         return JSONResponse(self.service.alerts(limit))
+
+    def acknowledge_alert(self, request: Request, alert_id: str):
+        self._api_auth(request)
+        alert = self.service.storage.get_alert(alert_id)
+        if alert is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        try:
+            updated = self.service.storage.update_alert_status(alert_id, "ACKNOWLEDGED")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse({"alert_id": updated.alert_id, "status": updated.status, "message": "Alert acknowledged."})
+
+    def resolve_alert(self, request: Request, alert_id: str):
+        self._api_auth(request)
+        alert = self.service.storage.get_alert(alert_id)
+        if alert is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        try:
+            updated = self.service.storage.update_alert_status(alert_id, "RESOLVED")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse({"alert_id": updated.alert_id, "status": updated.status, "message": "Alert resolved."})

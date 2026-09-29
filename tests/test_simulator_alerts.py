@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from rocks.alerts.engine import AlertEngine
 from rocks.hub.storage import HubStorage
 from rocks.ml.analysis import analyze_behavior_summary
@@ -44,3 +46,35 @@ def test_alert_persistence_and_duplicate_prevention(tmp_path):
     assert storage.insert_alert(alert) is False
     assert storage.alert_counts()["high"] == 1
     assert storage.recent_alerts()[0]["telemetry_id"] == record.record_id
+
+
+def test_alert_lifecycle_status_and_timestamps_are_persisted(tmp_path):
+    storage = HubStorage(tmp_path / "hub.db")
+    record = generate_records(Scenario.HIGH_TRAFFIC)[0]
+    storage.insert_telemetry(record)
+    analysis = analyze_behavior_summary(record, expected_traffic=1000, baseline_status="READY", analyzed_at="2026-01-01T00:00:00Z")
+    alert = AlertEngine().create_alert(analysis)
+    assert alert is not None
+    assert storage.insert_alert(alert) is True
+
+    inserted = storage.get_alert(alert.alert_id)
+    assert inserted is not None
+    assert inserted.status == "OPEN"
+    assert inserted.created_at is not None
+    assert inserted.acknowledged_at is None
+    assert inserted.resolved_at is None
+
+    updated = storage.update_alert_status(alert.alert_id, "ACKNOWLEDGED")
+    assert updated is not None
+    assert updated.status == "ACKNOWLEDGED"
+    assert updated.acknowledged_at is not None
+
+    resolved = storage.update_alert_status(alert.alert_id, "RESOLVED")
+    assert resolved is not None
+    assert resolved.status == "RESOLVED"
+    assert resolved.resolved_at is not None
+
+    with pytest.raises(ValueError):
+        storage.update_alert_status(alert.alert_id, "ACKNOWLEDGED")
+
+    assert storage.get_alert(alert.alert_id).status == "RESOLVED"

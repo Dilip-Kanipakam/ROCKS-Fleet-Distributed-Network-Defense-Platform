@@ -17,6 +17,8 @@ Only `GET /api/v1/health` is public. Telemetry ingestion and query endpoints (`G
 
 The bounded metadata-only context query accepts `telemetry_id` or an identity filter (`device_id` or `source_ip`), with optional `sensor_id`, `event_type`, `since`, and `until` filters. It returns the triggering record when anchored by `telemetry_id` plus up to 100 newest matching records; its default limit is 50. It does not return packet payloads or credentials.
 
+Alerts carry the same metadata-only approach. Each alert records a `telemetry_id` and a lifecycle state in SQLite. The default state is `OPEN`; an administrator may move it to `ACKNOWLEDGED` and then `RESOLVED`. These transitions are validated, and a resolved alert remains an operational state value rather than a claim that an attack was confirmed.
+
 Edge API keys are generated during local registration and stored only as salted PBKDF2 hashes. Plaintext keys are displayed only by the registration command and are never returned by API responses. Authentication failures use a generic `401 Invalid credentials` response.
 
 Hub SQLite connections use WAL mode for file-backed databases and a 5-second busy timeout. Edge liveness is derived from successful authenticated telemetry communication (`last_seen`). The configurable `hub.edge_liveness_timeout_seconds` defaults to 60 seconds. `ONLINE` means the Hub observed communication within that window; `OFFLINE` means no recent communication was observed, not that the physical sensor is definitely disconnected. The last-seen time is retained for offline sensors.

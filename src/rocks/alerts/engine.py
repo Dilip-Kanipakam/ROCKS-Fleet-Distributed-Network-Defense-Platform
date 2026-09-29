@@ -20,6 +20,9 @@ class Alert:
     retention_score: float | None
     message: str
     status: str = "OPEN"
+    created_at: str | None = None
+    acknowledged_at: str | None = None
+    resolved_at: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -48,6 +51,7 @@ class AlertEngine:
             retention_score=analysis.retention_score,
             message="Behavior differs significantly from the learned traffic baseline.",
             status="OPEN",
+            created_at=utc_now(),
         )
 
 

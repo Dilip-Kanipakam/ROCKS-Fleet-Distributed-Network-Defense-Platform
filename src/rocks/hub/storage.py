@@ -74,8 +74,10 @@ class HubStorage:
                     anomaly_score REAL,
                     retention_score REAL,
                     message TEXT NOT NULL,
-                    status TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'OPEN',
                     created_at TEXT NOT NULL,
+                    acknowledged_at TEXT,
+                    resolved_at TEXT,
                     UNIQUE (telemetry_id, alert_type)
                 );
                 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
@@ -83,6 +85,15 @@ class HubStorage:
                 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
                 """
             )
+            self._ensure_alert_columns(connection)
+
+    def _ensure_alert_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(alerts)").fetchall()}
+        if "acknowledged_at" not in columns:
+            connection.execute("ALTER TABLE alerts ADD COLUMN acknowledged_at TEXT")
+        if "resolved_at" not in columns:
+            connection.execute("ALTER TABLE alerts ADD COLUMN resolved_at TEXT")
+        connection.execute("UPDATE alerts SET status = 'OPEN' WHERE status IS NULL OR status = ''")
 
     def register_edge(self, sensor_id: str, name: str, api_key_hash: str) -> EdgeInfo:
         self.initialize()
@@ -454,20 +465,76 @@ class HubStorage:
                 """
                 INSERT OR IGNORE INTO alerts
                 (alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type,
-                 severity, anomaly_score, retention_score, message, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 severity, anomaly_score, retention_score, message, status, created_at,
+                 acknowledged_at, resolved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (alert.alert_id, alert.telemetry_id, alert.sensor_id, alert.device_id,
                  alert.timestamp, alert.alert_type, alert.severity, alert.anomaly_score,
-                 alert.retention_score, alert.message, alert.status, _utc_now()),
+                 alert.retention_score, alert.message, alert.status,
+                 alert.created_at or _utc_now(), alert.acknowledged_at, alert.resolved_at),
             )
         return cursor.rowcount == 1
+
+    def get_alert(self, alert_id: str) -> Alert | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at FROM alerts WHERE alert_id = ?",
+                (alert_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return Alert(
+            alert_id=row["alert_id"],
+            telemetry_id=row["telemetry_id"],
+            sensor_id=row["sensor_id"],
+            device_id=row["device_id"],
+            timestamp=row["timestamp"],
+            alert_type=row["alert_type"],
+            severity=row["severity"],
+            anomaly_score=row["anomaly_score"],
+            retention_score=row["retention_score"],
+            message=row["message"],
+            status=row["status"],
+            created_at=row["created_at"],
+            acknowledged_at=row["acknowledged_at"],
+            resolved_at=row["resolved_at"],
+        )
+
+    def update_alert_status(self, alert_id: str, new_status: str) -> Alert | None:
+        self.initialize()
+        current = self.get_alert(alert_id)
+        if current is None:
+            return None
+        valid_transitions = {
+            "OPEN": {"ACKNOWLEDGED", "RESOLVED"},
+            "ACKNOWLEDGED": {"RESOLVED"},
+            "RESOLVED": set(),
+        }
+        if current.status == new_status or new_status not in valid_transitions.get(current.status, set()):
+            raise ValueError(f"Invalid alert transition: {current.status} -> {new_status}")
+
+        now = _utc_now()
+        field_updates = ["status = ?"]
+        params: list[Any] = [new_status]
+        if new_status == "ACKNOWLEDGED":
+            field_updates.append("acknowledged_at = ?")
+            params.append(current.acknowledged_at or now)
+        if new_status == "RESOLVED":
+            field_updates.append("resolved_at = ?")
+            params.append(current.resolved_at or now)
+        params.append(alert_id)
+
+        with self._connect() as connection:
+            connection.execute(f"UPDATE alerts SET {', '.join(field_updates)} WHERE alert_id = ?", params)
+        return self.get_alert(alert_id)
 
     def recent_alerts(self, limit: int = 50) -> list[dict[str, Any]]:
         self.initialize()
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status FROM alerts ORDER BY timestamp DESC LIMIT ?",
+                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at FROM alerts ORDER BY timestamp DESC LIMIT ?",
                 (min(max(limit, 1), 100),),
             ).fetchall()
         return [dict(row) for row in rows]

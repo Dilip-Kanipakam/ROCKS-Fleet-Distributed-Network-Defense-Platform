@@ -125,6 +125,39 @@ def test_alerts_api_returns_investigation_alerts(tmp_path, monkeypatch):
     assert response.json()[0]["alert_type"] == "POTENTIAL_ANOMALY"
 
 
+def test_dashboard_alert_lifecycle_routes_and_auth(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    service = client.app.state.hub_service
+    record = behavior_summary_telemetry(
+        TrafficFeatures(0, 60, 1, 10000, 5000, 5000, 1, 1, 1, 1, 1, 1, 0, 0, 0, 166.0, 0.1),
+        "EDGE-ALERT-LIFE",
+        timestamp=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    service.storage.insert_telemetry(record)
+    analysis = analyze_behavior_summary(record, expected_traffic=1000, baseline_status="READY", analyzed_at="2026-01-02T00:00:00Z")
+    alert = service.alerts.create_alert(analysis)
+    assert alert is not None
+    service.storage.insert_alert(alert)
+
+    unauth = client.post(f"/api/v1/dashboard/alerts/{alert.alert_id}/acknowledge")
+    assert unauth.status_code == 401
+
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    ack = client.post(f"/api/v1/dashboard/alerts/{alert.alert_id}/acknowledge")
+    assert ack.status_code == 200
+    assert ack.json()["status"] == "ACKNOWLEDGED"
+    assert service.storage.get_alert(alert.alert_id).status == "ACKNOWLEDGED"
+
+    resolve = client.post(f"/api/v1/dashboard/alerts/{alert.alert_id}/resolve")
+    assert resolve.status_code == 200
+    assert resolve.json()["status"] == "RESOLVED"
+    assert service.storage.get_alert(alert.alert_id).status == "RESOLVED"
+
+    invalid = client.post(f"/api/v1/dashboard/alerts/{alert.alert_id}/acknowledge")
+    assert invalid.status_code == 409
+    assert service.storage.get_alert(alert.alert_id).status == "RESOLVED"
+
+
 def test_dashboard_telemetry_handles_connection_unknown_received_bytes(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
