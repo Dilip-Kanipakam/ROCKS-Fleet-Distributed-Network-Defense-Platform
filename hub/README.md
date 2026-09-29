@@ -45,6 +45,8 @@ For a single-machine installation, select **Edge + Hub**. The wizard registers t
 
 The wizard configures software only. It does not configure a managed switch, SPAN session, TAP, router, firewall, or network topology. The Edge capture interface must be connected to an appropriate observation point for traffic visibility.
 
+For continuous operation, `rocks service install` installs `rocks-hub.service` for Hub mode, or both `rocks-edge.service` and `rocks-hub.service` for all-in-one mode. The Hub unit starts `rocks dashboard run`, which serves the Hub APIs and mounts the dashboard in that same process; do not start a separate dashboard service. Installation/removal are explicit system administrator actions. Check state with `rocks service status`, follow logs with `journalctl -u rocks-hub.service -f`, and remove the units with `sudo rocks service uninstall`.
+
 All-in-one:
 
 ```text

@@ -74,6 +74,8 @@ For a non-root demonstration without a physical interface:
 rocks edge run --dry-run
 ```
 
+For continuous operation, `rocks service install` creates `rocks-edge.service` when the configured deployment mode is `edge` or `all-in-one`. The unit runs as the installing administrator (not as a hardcoded account), receives only `CAP_NET_RAW` for capture, and writes logs to journald. Use `rocks service status`, `rocks service restart`, and `journalctl -u rocks-edge.service -f` to operate and diagnose it. Service installation requires an explicit administrator action and does not configure a SPAN port, TAP, switch, or other network hardware.
+
 The Edge requires a managed-switch SPAN or port-mirroring setup for visibility into selected ports or VLANs. Connecting a laptop to an ordinary switch port does not automatically expose all network traffic.
 
 All records are persisted locally and added to the persistent buffer before Hub delivery. The sender removes them only after successful acknowledgement.

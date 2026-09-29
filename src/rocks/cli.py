@@ -42,6 +42,7 @@ from rocks.paths import data_dir
 from rocks.demo import run_demo as run_mvp_demo
 from rocks.alerts.config import get_alert_config
 from rocks.simulator.generator import Scenario, generate_records
+from rocks.service_manager import ServiceManager, ServiceManagerError
 
 
 from scapy.layers.inet import IP, TCP, UDP
@@ -70,6 +71,18 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("config", help="show the active configuration path")
     subparsers.add_parser("logs", help="show logging status")
     subparsers.add_parser("test", help="run the foundation test command")
+    service_parser = subparsers.add_parser("service", help="manage ROCKS Linux systemd services")
+    service_subparsers = service_parser.add_subparsers(dest="service_command")
+    service_subparsers.add_parser("status", help="show installed and running service state")
+    service_subparsers.add_parser("install", help="install and start services for the configured mode")
+    service_subparsers.add_parser("uninstall", help="stop, disable, and remove ROCKS service units")
+    service_subparsers.add_parser("start", help="start configured ROCKS services")
+    service_subparsers.add_parser("stop", help="stop configured ROCKS services")
+    service_subparsers.add_parser("restart", help="restart configured ROCKS services")
+    generate_service_parser = service_subparsers.add_parser(
+        "generate", help="write unit files to a directory without installing them"
+    )
+    generate_service_parser.add_argument("--output-dir", required=True)
     setup_parser = subparsers.add_parser("setup", help="interactive configuration wizard")
     setup_parser.add_argument("--config-path", help="path to the YAML config file to create or update")
     setup_parser.add_argument("--mode", help="deployment mode: edge, hub, or all-in-one")
@@ -473,6 +486,37 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "test":
         print("ROCKS Fleet foundation tests passed.")
+        return 0
+
+    if args.command == "service":
+        manager = ServiceManager()
+        try:
+            if args.service_command == "generate":
+                for path in manager.generate(args.output_dir):
+                    print(f"Generated: {path}")
+                return 0
+            if args.service_command == "install":
+                installed = manager.install()
+                print("Installed and started: " + ", ".join(installed))
+                log_units = " ".join(f"-u {unit_name}" for unit_name in installed)
+                print(f"Logs: journalctl {log_units} -f")
+                return 0
+            if args.service_command == "uninstall":
+                removed = manager.uninstall()
+                print("Removed service units: " + ", ".join(removed))
+                return 0
+            if args.service_command in {"start", "stop", "restart"}:
+                for unit_name, active, enabled in manager.operate(args.service_command):
+                    print(f"{unit_name}: {active} (enabled: {enabled})")
+                return 0
+            if args.service_command == "status":
+                for unit_name, active, enabled in manager.status():
+                    print(f"{unit_name}: {active} (enabled: {enabled})")
+                return 0
+        except ServiceManagerError as exc:
+            print(f"ROCKS service error: {exc}", file=sys.stderr)
+            return 2
+        parser.parse_args(["service", "--help"])
         return 0
 
     if args.command == "edge":

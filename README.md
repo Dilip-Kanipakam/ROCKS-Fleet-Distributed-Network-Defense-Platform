@@ -121,6 +121,38 @@ For broad network visibility, connect the selected Edge interface to an appropri
 
 Start the Hub/Command Center with `rocks dashboard run` (or `rocks hub run`). Start an Edge sensor with `rocks edge run`. Edge capture may require the operating-system privileges needed for packet observation.
 
+## Linux Services
+
+For continuous operation on a Linux host with systemd, complete setup and software checks first. Service installation is separate from `rocks setup` and explicitly requires administrator approval:
+
+```bash
+rocks setup
+rocks test
+rocks service install
+rocks service status
+```
+
+`rocks service install` installs and starts only the units required by the configured mode. Edge mode installs `rocks-edge.service`; Hub mode installs `rocks-hub.service`; all-in-one installs both. The Hub unit runs the existing combined Hub and dashboard application once. Units use the current Python interpreter, application directory, and config path. They run under the invoking administrator's account; Edge is granted `CAP_NET_RAW` for passive capture. No credentials are copied into the unit files. The local config must remain readable only by its owner.
+
+System service installation and removal need root. Review the requested operation, then run `sudo rocks service install` or `sudo rocks service uninstall`. Start, stop, restart, and status use the configured units:
+
+```bash
+rocks service start
+rocks service stop
+rocks service restart
+rocks service status
+rocks service uninstall
+```
+
+Inspect service output and startup failures with journald:
+
+```bash
+journalctl -u rocks-edge.service -f
+journalctl -u rocks-hub.service -f
+```
+
+To inspect unit generation without installing anything, use `rocks service generate --output-dir /tmp/rocks-units`; this works without systemd. Service management does not configure a switch SPAN session, TAP, router, firewall, or network topology. Broad Edge visibility still requires an appropriate observation point.
+
 ## Python virtual environment
 
 Create a virtual environment from the project root:
