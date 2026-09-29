@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +55,22 @@ def write_config(config: dict[str, Any], config_path: str | Path | None = None) 
     path.parent.mkdir(parents=True, exist_ok=True)
     if yaml is None:
         raise RuntimeError("PyYAML is required to write configuration files.")
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(config, handle, sort_keys=False, default_flow_style=False)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(config, handle, sort_keys=False, default_flow_style=False)
+        os.replace(temporary_name, path)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
     return path
 
 
@@ -64,6 +79,8 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
         config_path = get_config_path()
 
     path = Path(config_path)
+    if path == DEFAULT_CONFIG_PATH and not path.exists() and DEFAULT_CONFIG_TEMPLATE_PATH.exists():
+        path = DEFAULT_CONFIG_TEMPLATE_PATH
     if not path.exists():
         raise FileNotFoundError(f"Configuration file not found: {path}")
 
@@ -83,9 +100,7 @@ def get_config_path() -> str:
     env_path = os.getenv("ROCKS_CONFIG_PATH")
     if env_path:
         return env_path
-    if DEFAULT_CONFIG_PATH.exists():
-        return str(DEFAULT_CONFIG_PATH)
-    return str(DEFAULT_CONFIG_TEMPLATE_PATH)
+    return str(DEFAULT_CONFIG_PATH)
 
 
 def get_storage_path(config_path: str | Path | None = None) -> Path:

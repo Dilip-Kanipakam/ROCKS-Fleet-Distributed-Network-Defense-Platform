@@ -39,6 +39,12 @@ The Hub has its own SQLite database and does not reuse an Edge database. Duplica
 
 ## Deployment
 
+For a new Hub / Command Center host, run `rocks setup` and select **Hub / Command Center**. The wizard configures the SQLite path and dashboard credentials, hashes the password, generates a random session secret when needed, and writes `config/config.yaml` with owner-only permissions. Dashboard settings are loaded from that file unless their corresponding existing environment variables override them. Register each remote Edge on the Hub with `rocks hub edge register --sensor-id <sensor-id>` and transfer the displayed API key securely; the Hub retains only its salted hash.
+
+For a single-machine installation, select **Edge + Hub**. The wizard registers the local Edge identity in the configured Hub database and writes the generated API key only to the protected local config. It does not print the key.
+
+The wizard configures software only. It does not configure a managed switch, SPAN session, TAP, router, firewall, or network topology. The Edge capture interface must be connected to an appropriate observation point for traffic visibility.
+
 All-in-one:
 
 ```text

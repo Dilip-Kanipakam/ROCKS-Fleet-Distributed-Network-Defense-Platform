@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,7 @@ def test_parser_has_expected_commands():
 
 def test_setup_writes_edge_configuration(tmp_path):
     config_path = tmp_path / "rocks-config.yaml"
+    interface = socket.if_nameindex()[0][1]
 
     exit_code = main(
         [
@@ -68,7 +70,7 @@ def test_setup_writes_edge_configuration(tmp_path):
             "--sensor-id",
             "ROCKS-EDGE-SETUP",
             "--interface",
-            "eth0",
+            interface,
             "--hub-url",
             "http://127.0.0.1:8000",
             "--api-key",

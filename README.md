@@ -88,19 +88,38 @@ Run the operational Edge agent with `rocks edge run --interface <interface> --hu
 
 ## Setup wizard
 
-Use the built-in CLI configuration wizard for first-time deployment setup:
+Install from the repository root, then start the interactive setup:
 
 ```bash
-rocks setup --mode all-in-one --non-interactive \
-  --sensor-id ROCKS-EDGE-01 \
-  --interface eth0 \
-  --hub-url http://127.0.0.1:8000 \
-  --api-key <hub-key> \
-  --dashboard-username admin \
-  --dashboard-password <strong-password>
+git clone <repository-url>
+cd Project-RocksFleet
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+rocks setup
 ```
 
-The interactive form is available with just `rocks setup`. It asks only the values relevant to the selected deployment mode and writes the local YAML configuration used by the existing CLI. It does not configure switch port mirroring, VLAN access, or any other physical network infrastructure.
+Choose one of the prompted deployment modes:
+
+- **Edge Sensor** configures a stable sensor ID, an available interface, the Hub URL, an Edge API key, and its send interval. On the Hub, first register the sensor with `rocks hub edge register --sensor-id ROCKS-EDGE-01`; the generated key is shown once and must be entered into the Edge setup.
+- **Hub / Command Center** configures the Hub, SQLite database path, and dashboard administrator. The password is entered without echo, hashed with the existing password hasher, and never included in the setup summary. The session secret is generated cryptographically when one is not already configured.
+- **Edge + Hub** configures both on one machine and registers the Edge identity in the local Hub database, storing only its hashed key there.
+
+The generated `config/config.yaml` is the runtime YAML configuration; it is ignored by Git and written with owner-only permissions. `ROCKS_CONFIG_PATH` can select another YAML path, and existing environment-variable overrides continue to take precedence. A non-interactive invocation must provide `--mode` and all required settings; `--force` is required to update an existing config without an interactive confirmation. Validate an existing configuration without writing it with `rocks setup --check`.
+
+After setup, validate the software configuration and synthetic Edge pipeline:
+
+```bash
+rocks setup --check
+rocks test
+rocks edge test
+rocks hub status
+rocks dashboard status
+```
+
+For broad network visibility, connect the selected Edge interface to an appropriate managed-switch SPAN/port-mirroring session or a TAP. Connecting a normal switch access port does not expose all campus traffic. ROCKS setup configures software only; it does not configure the physical switch, SPAN session, TAP, router, firewall, or network topology.
+
+Start the Hub/Command Center with `rocks dashboard run` (or `rocks hub run`). Start an Edge sensor with `rocks edge run`. Edge capture may require the operating-system privileges needed for packet observation.
 
 ## Python virtual environment
 
