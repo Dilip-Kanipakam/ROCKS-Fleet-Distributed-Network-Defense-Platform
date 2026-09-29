@@ -144,6 +144,7 @@ def dns_telemetry(
     request_count: int,
     failure_count: int = 0,
     device_id: str | None = None,
+    protocol: str | None = None,
     timestamp: datetime | None = None,
 ) -> TelemetryRecord:
     payload = {
@@ -151,7 +152,7 @@ def dns_telemetry(
         "source_port": source_port,
         "destination_ip": destination_ip,
         "destination_port": destination_port,
-        "protocol": "UDP" if destination_port == 53 else "DNS",
+        "protocol": protocol or ("UDP" if destination_port == 53 else "DNS"),
         "request_count": request_count,
         "failure_count": failure_count,
     }

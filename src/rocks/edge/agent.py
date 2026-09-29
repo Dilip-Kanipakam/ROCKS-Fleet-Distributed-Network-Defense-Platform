@@ -16,7 +16,12 @@ from rocks.edge.flow import FlowTracker
 from rocks.edge.parser import PacketMetadata, parse_packet
 from rocks.edge.sender import EdgeSender, SendResult
 from rocks.edge.storage import TelemetryStorage
-from rocks.edge.telemetry import TelemetryRecord, behavior_summary_telemetry
+from rocks.edge.telemetry import (
+    TelemetryRecord,
+    behavior_summary_telemetry,
+    connection_telemetry,
+    dns_telemetry,
+)
 from rocks.logging_config import configure_logging
 
 
@@ -46,6 +51,7 @@ class EdgeAgent:
         self.feature_aggregator = FeatureAggregator(config.telemetry_window_seconds, config.buffer_limit)
         self.flow_tracker = FlowTracker()
         self._packets: list[PacketMetadata] = []
+        self._flow_source_macs: dict[tuple[str, str, int, int, str], str] = {}
         self._lock = threading.Lock()
         self.last_successful_send: str | None = None
         self.last_hub_error: str | None = None
@@ -57,12 +63,21 @@ class EdgeAgent:
             metadata = parse_packet(packet)
             if metadata.source_ip is None or metadata.destination_ip is None:
                 return
+            expired = []
             with self._lock:
+                expired = self.flow_tracker.expire(metadata.timestamp)
+                expired_records = [self._connection_record(flow) for flow in expired]
+                for flow in expired:
+                    self._flow_source_macs.pop(_flow_key(flow), None)
                 self._packets.append(metadata)
                 if len(self._packets) > self.config.buffer_limit:
                     self._packets.pop(0)
                 self.feature_aggregator.add(metadata)
-                self.flow_tracker.update(metadata)
+                flow = self.flow_tracker.update(metadata)
+                if flow is not None and metadata.source_mac:
+                    self._flow_source_macs[_flow_key(flow)] = metadata.source_mac
+            for record in expired_records:
+                self._store_local(record)
         except Exception:
             self.logger.exception("Edge packet metadata processing failed")
 
@@ -73,7 +88,9 @@ class EdgeAgent:
             packets = list(self._packets)
             self._packets.clear()
             flows = self.flow_tracker.snapshot()
-        records: list[TelemetryRecord] = []
+        records: list[TelemetryRecord] = self._dns_records(packets)
+        for record in records:
+            self._store_local(record)
         for features in aggregate_features_by_source(
             packets,
             flows,
@@ -85,12 +102,67 @@ class EdgeAgent:
                 device_id=features.device_id,
                 window_seconds=self.config.telemetry_window_seconds,
             )
-            self.storage.insert_telemetry(record)
-            self.buffer.add(record)
-            self.telemetry_generated += 1
-            self.logger.info("EDGE_TELEMETRY_GENERATED sensor_id=%s", self.config.sensor_id)
+            self._store_local(record)
             records.append(record)
         return records
+
+    def _dns_records(self, packets: list[PacketMetadata]) -> list[TelemetryRecord]:
+        dns_groups: dict[tuple[str, int | None, str, int | None, str], list[PacketMetadata]] = {}
+        for packet in packets:
+            # A destination port of 53 identifies an observed query direction.
+            # Response/failure semantics are unavailable from current metadata.
+            if not packet.dns_related or packet.destination_port != 53:
+                continue
+            key = (
+                packet.source_ip or "",
+                packet.source_port,
+                packet.destination_ip or "",
+                packet.destination_port,
+                packet.protocol,
+            )
+            dns_groups.setdefault(key, []).append(packet)
+
+        records = []
+        for (source_ip, source_port, destination_ip, destination_port, protocol), group in dns_groups.items():
+            source_macs = {packet.source_mac for packet in group if packet.source_mac}
+            source_mac = next(iter(source_macs)) if len(source_macs) == 1 else None
+            device_id = f"{source_ip}|{source_mac}" if source_mac else None
+            observed_at = datetime.fromtimestamp(max(packet.timestamp for packet in group), tz=timezone.utc)
+            records.append(
+                dns_telemetry(
+                    self.config.sensor_id,
+                    source_ip=source_ip,
+                    source_port=source_port,
+                    destination_ip=destination_ip,
+                    destination_port=destination_port,
+                    protocol=protocol,
+                    request_count=len(group),
+                    failure_count=0,
+                    device_id=device_id,
+                    timestamp=observed_at,
+                )
+            )
+        return records
+
+    def _connection_record(self, flow: Any) -> TelemetryRecord:
+        source_mac = self._flow_source_macs.get(_flow_key(flow))
+        device_id = f"{flow.source_ip}|{source_mac}" if source_mac else None
+        observed_at = datetime.fromtimestamp(flow.last_seen, tz=timezone.utc)
+        return connection_telemetry(
+            flow,
+            self.config.sensor_id,
+            device_id=device_id,
+            source_mac=source_mac,
+            bytes_sent=flow.bytes,
+            bytes_received=None,
+            timestamp=observed_at,
+        )
+
+    def _store_local(self, record: TelemetryRecord) -> None:
+        self.storage.insert_telemetry(record)
+        self.buffer.add(record)
+        self.telemetry_generated += 1
+        self.logger.info("EDGE_TELEMETRY_GENERATED sensor_id=%s event_type=%s", self.config.sensor_id, record.event_type)
 
     def send_pending(self) -> SendResult:
         if self.sender is None:
@@ -169,3 +241,13 @@ def install_signal_handlers(agent: EdgeAgent) -> None:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _flow_key(flow: Any) -> tuple[str, str, int, int, str]:
+    return (
+        flow.source_ip,
+        flow.destination_ip,
+        flow.source_port,
+        flow.destination_port,
+        flow.protocol,
+    )

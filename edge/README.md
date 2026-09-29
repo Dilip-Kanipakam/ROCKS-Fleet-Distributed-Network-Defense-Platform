@@ -26,7 +26,7 @@ Edge telemetry uses schema version `1.0` and a common envelope containing `times
 
 Behavior summaries use a configurable 60-second window by default. The current Edge stores telemetry locally in SQLite with indexed timestamp, sensor, device, and event fields. A separate SQLite-backed FIFO buffer keeps records available across process restarts when future Hub delivery is unavailable.
 
-The current Edge stores telemetry locally. Transmission to the ROCKS Hub is planned for the next server/Hub integration stage.
+The Edge stores telemetry locally and forwards buffered records to the ROCKS Hub when configured and available.
 
 ## Live capture and SPAN
 
@@ -44,7 +44,7 @@ Deploy and operate Edge only on networks and systems where monitoring is authori
 
 ## Live Edge agent
 
-Live `BEHAVIOR_SUMMARY` records use the same schema 1.0 envelope as synthetic telemetry. `bytes_sent` is traffic from the summarized source IP toward destinations. `bytes_received` is traffic from destinations toward that source. The live agent passes source identity into feature aggregation and emits one summary per observed source IP so byte counters are not mixed across devices. DNS failure, reconnect, and connection-failure counters stay at 0 unless those events are separately observed; they are not inferred from packet payloads.
+Live telemetry uses the existing schema 1.0 builders. `BEHAVIOR_SUMMARY` is emitted per observed source IP; `bytes_sent` counts traffic from that source toward destinations and `bytes_received` counts traffic toward that source. DNS queries to destination port 53 are grouped by source/destination endpoint and transport within each flush window; failure count remains 0 because current metadata does not establish DNS response failures. Expired idle flows produce `CONNECTION` records with directional sent bytes and unknown received bytes. `RECONNECT` is not emitted: this passive packet metadata does not reliably distinguish reconnection from retries or ordinary connection behavior. No event type confirms an attack.
 
 The operational agent connects the existing capture, parser, flow, feature, telemetry, local SQLite, persistent buffer, and Hub sender components:
 
@@ -70,6 +70,4 @@ rocks edge run --dry-run
 
 The Edge requires a managed-switch SPAN or port-mirroring setup for visibility into selected ports or VLANs. Connecting a laptop to an ordinary switch port does not automatically expose all network traffic.
 
-## Planned later chunks
-
-Telemetry transmission, local database storage, ROCKS Hub, ML, anomaly and retention scoring, and the Command Center dashboard are not implemented in Chunk 2.
+All records are persisted locally and added to the persistent buffer before Hub delivery. The sender removes them only after successful acknowledgement.
