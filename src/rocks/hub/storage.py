@@ -803,6 +803,78 @@ class HubStorage:
             open_count = connection.execute("SELECT COUNT(*) FROM alerts WHERE status = 'OPEN'").fetchone()[0]
         return {"total_recent": int(total), "high": int(high), "warning": int(warning), "open": int(open_count)}
 
+    def add_investigation_note(self, investigation_id: str, note: dict[str, Any]) -> dict[str, Any] | None:
+        event = self.add_investigation_event(investigation_id, note)
+        if event is None:
+            return None
+        return self._analyst_note(event)
+
+    def investigation_notes(self, investigation_id: str) -> list[dict[str, Any]] | None:
+        events = self._investigation_records(investigation_id, "ANALYST_NOTE")
+        if events is None:
+            return None
+        return [self._analyst_note(event) for event in events]
+
+    def add_investigation_action(self, investigation_id: str, action: dict[str, Any]) -> dict[str, Any] | None:
+        event = self.add_investigation_event(investigation_id, action)
+        if event is None:
+            return None
+        return self._analyst_action(event)
+
+    def investigation_actions(self, investigation_id: str) -> list[dict[str, Any]] | None:
+        events = self._investigation_records(investigation_id, "ANALYST_ACTION")
+        if events is None:
+            return None
+        return [self._analyst_action(event) for event in events]
+
+    def _investigation_records(self, investigation_id: str, event_type: str) -> list[dict[str, Any]] | None:
+        self.initialize()
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM investigations WHERE investigation_id = ?", (investigation_id,)
+            ).fetchone()
+            if exists is None:
+                return None
+            rows = connection.execute(
+                "SELECT event_id, investigation_id, timestamp, event_type, severity, message, source, metadata_json FROM investigation_events WHERE investigation_id = ? AND event_type = ? ORDER BY timestamp DESC, rowid DESC",
+                (investigation_id, event_type),
+            ).fetchall()
+        return [
+            {
+                "event_id": row["event_id"],
+                "investigation_id": row["investigation_id"],
+                "timestamp": row["timestamp"],
+                "event_type": row["event_type"],
+                "severity": row["severity"],
+                "message": row["message"],
+                "source": row["source"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _analyst_note(event: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "note_id": event["event_id"],
+            "investigation_id": event["investigation_id"],
+            "timestamp": event["timestamp"],
+            "author": event["source"],
+            "note_text": event["message"],
+            "category": event["metadata"].get("category"),
+        }
+
+    @staticmethod
+    def _analyst_action(event: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "action_id": event["event_id"],
+            "investigation_id": event["investigation_id"],
+            "timestamp": event["timestamp"],
+            "author": event["source"],
+            "category": event["metadata"]["category"],
+            "message": event["message"],
+        }
+
     def _connect(self) -> sqlite3.Connection:
         connection = connect_sqlite(self.database_path)
         connection.row_factory = sqlite3.Row

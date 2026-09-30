@@ -20,13 +20,27 @@ INVESTIGATION_TRANSITIONS = {
 }
 CASE_EVENT_TYPES = {
     "ANALYST_NOTE",
+    "ANALYST_ACTION",
     "DETECTION",
     "ALERT",
     "TELEMETRY",
     "BEHAVIOR_SUMMARY",
     "ML_ANALYSIS",
 }
+ANALYST_ACTION_CATEGORIES = {
+    "OBSERVED",
+    "INVESTIGATING",
+    "DEVICE_REVIEWED",
+    "TRAFFIC_REVIEWED",
+    "ADMIN_ACTION_REQUIRED",
+    "RESOLVED",
+}
+MAX_ANALYST_NOTE_LENGTH = 2000
 _SECRET_KEY = re.compile(r"password|passwd|smtp|api.?key|token|session.?secret|authorization|credential", re.IGNORECASE)
+_SENSITIVE_NOTE = re.compile(
+    r"(?:\b(?:password|passwd|api[ _-]?key|token|cookie|authorization|session[ _-]?secret|smtp[ _-]?(?:password|credential))\b\s*[:=]|\bbearer\s+\S+)",
+    re.IGNORECASE,
+)
 
 _DEVICE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@|+-]{0,127}\Z")
 _SENSOR_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -134,6 +148,12 @@ def validate_case_event(data: Any) -> dict[str, Any]:
         normalized_timestamp = utc_string(parse_timestamp(timestamp, field="event"))
     source = validate_case_text(data.get("source", "analyst"), field="source", required=True, maximum=80)
     message = validate_case_text(data.get("message"), field="message", required=True, maximum=2000)
+    if event_type in {"ANALYST_NOTE", "ANALYST_ACTION"}:
+        _validate_analyst_text(message)
+    if event_type == "ANALYST_ACTION":
+        category = metadata.get("category")
+        if not isinstance(category, str) or category not in ANALYST_ACTION_CATEGORIES:
+            raise ValueError("Invalid analyst action category")
     return {
         "event_id": str(uuid.uuid4()),
         "timestamp": normalized_timestamp,
@@ -142,6 +162,54 @@ def validate_case_event(data: Any) -> dict[str, Any]:
         "message": message,
         "source": source,
         "metadata": metadata,
+    }
+
+
+def validate_analyst_note(data: Any, *, author: str) -> dict[str, Any]:
+    if not isinstance(data, dict) or set(data) - {"note_text", "category"}:
+        raise ValueError("Note body must contain note_text and optional category")
+    note_text = validate_case_text(
+        data.get("note_text"),
+        field="note_text",
+        required=True,
+        maximum=MAX_ANALYST_NOTE_LENGTH,
+    )
+    _validate_analyst_text(note_text)
+    category = data.get("category")
+    if category is not None and (
+        not isinstance(category, str) or category not in ANALYST_ACTION_CATEGORIES
+    ):
+        raise ValueError("Invalid analyst note category")
+    safe_author = validate_case_text(author, field="author", required=False, maximum=80)
+    return {
+        "event_id": str(uuid.uuid4()),
+        "timestamp": _utc_now(),
+        "event_type": "ANALYST_NOTE",
+        "severity": "INFO",
+        "message": note_text,
+        "source": safe_author or "dashboard-admin",
+        "metadata": {"category": category} if category is not None else {},
+    }
+
+
+def validate_analyst_action(data: Any, *, author: str) -> dict[str, Any]:
+    if not isinstance(data, dict) or set(data) - {"category", "message"}:
+        raise ValueError("Action body must contain category and optional message")
+    category = data.get("category")
+    if not isinstance(category, str) or category not in ANALYST_ACTION_CATEGORIES:
+        raise ValueError("Invalid analyst action category")
+    message = data.get("message", f"Analyst recorded {category}.")
+    message = validate_case_text(message, field="message", required=True, maximum=500)
+    _validate_analyst_text(message)
+    safe_author = validate_case_text(author, field="author", required=False, maximum=80)
+    return {
+        "event_id": str(uuid.uuid4()),
+        "timestamp": _utc_now(),
+        "event_type": "ANALYST_ACTION",
+        "severity": "INFO",
+        "message": message,
+        "source": safe_author or "dashboard-admin",
+        "metadata": {"category": category},
     }
 
 
@@ -163,6 +231,18 @@ def _validate_metadata(value: Any, *, depth: int = 0) -> None:
     if isinstance(value, float) and math.isfinite(value):
         return
     raise ValueError("metadata must contain only JSON values")
+
+
+def _validate_analyst_text(value: str) -> None:
+    if _SENSITIVE_NOTE.search(value):
+        raise ValueError("Analyst text contains credential-like content")
+    if value.lstrip().startswith(("{", "[")):
+        try:
+            json.loads(value)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise ValueError("Structured payload content is not accepted in analyst text")
 
 
 def _utc_now() -> str:

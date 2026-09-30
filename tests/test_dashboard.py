@@ -374,3 +374,43 @@ def test_device_investigation_empty_xss_and_storage_failure_states(tmp_path, mon
     assert unavailable.status_code == 503
     assert "temporarily unavailable" in unavailable.text
     assert "private database detail" not in unavailable.text
+
+
+def test_dashboard_analyst_notes_actions_auth_timeline_and_closed_case(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    case_id = "00000000-0000-4000-8000-000000000007"
+    note_url = f"/api/v1/dashboard/investigations/{case_id}/notes"
+    action_url = f"/api/v1/dashboard/investigations/{case_id}/actions"
+    assert client.post(note_url, json={"note_text": "No session"}).status_code == 401
+
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    storage = client.app.state.hub_service.storage
+    case = storage.create_investigation(title="Analyst UI case", device_id="DEVICE-ANALYST-UI")
+    case_id = case["investigation_id"]
+    note_url = f"/api/v1/dashboard/investigations/{case_id}/notes"
+    action_url = f"/api/v1/dashboard/investigations/{case_id}/actions"
+    note = client.post(note_url, json={"note_text": "Reviewed counters; no payload retained."})
+    action = client.post(action_url, json={"category": "TRAFFIC_REVIEWED"})
+    assert note.status_code == 201
+    assert note.json()["author"] == "admin"
+    assert action.status_code == 201
+    assert action.json()["author"] == "admin"
+
+    page = client.get(f"/dashboard/investigation/DEVICE-ANALYST-UI?case_id={case_id}")
+    assert page.status_code == 200
+    assert "Analyst notes" in page.text
+    assert "Reviewed counters; no payload retained." in page.text
+    assert "admin" in page.text
+    assert "Record investigation action" in page.text
+    assert "TRAFFIC_REVIEWED" in page.text
+    assert "ANALYST_NOTE" in page.text
+    assert "ANALYST_ACTION" in page.text
+
+    storage.update_investigation(case_id, {"status": "IN_PROGRESS"})
+    storage.update_investigation(case_id, {"status": "RESOLVED"})
+    assert client.post(f"/api/v1/dashboard/investigations/{case_id}/close").status_code == 200
+    closed_page = client.get(f"/dashboard/investigation/DEVICE-ANALYST-UI?case_id={case_id}")
+    assert "This case is closed. Notes and actions are read-only." in closed_page.text
+    assert '<form id="analyst-note-form"' not in closed_page.text
+    assert client.post(note_url, json={"note_text": "Closed write rejected."}).status_code == 409
+    assert len(storage.investigation_notes(case_id)) == 1

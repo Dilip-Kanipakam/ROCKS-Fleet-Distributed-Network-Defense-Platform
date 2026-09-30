@@ -12,6 +12,8 @@ from rocks.hub.storage import HubStorage
 from rocks.hub.investigation import (
     INVESTIGATION_STATUSES,
     resolve_time_range,
+    validate_analyst_action,
+    validate_analyst_note,
     validate_case_event,
     validate_case_text,
     validate_identifier,
@@ -214,6 +216,72 @@ def create_app(database_path: str | None = None) -> FastAPI:
         if events is None:
             raise HTTPException(status_code=404, detail="Investigation not found")
         return {"investigation_id": investigation_id, "events": events}
+
+    @app.post("/api/v1/investigations/{investigation_id}/notes", status_code=status.HTTP_201_CREATED)
+    def add_investigation_note(
+        investigation_id: str,
+        data: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+            note = validate_analyst_note(data, author="hub-api")
+            stored = service.storage.add_investigation_note(investigation_id, note)
+        except ValueError as exc:
+            code = 409 if "Closed investigations" in str(exc) else 422
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return stored
+
+    @app.get("/api/v1/investigations/{investigation_id}/notes")
+    def get_investigation_notes(
+        investigation_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        notes = service.storage.investigation_notes(investigation_id)
+        if notes is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return {"investigation_id": investigation_id, "notes": notes}
+
+    @app.post("/api/v1/investigations/{investigation_id}/actions", status_code=status.HTTP_201_CREATED)
+    def add_investigation_action(
+        investigation_id: str,
+        data: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+            action = validate_analyst_action(data, author="hub-api")
+            stored = service.storage.add_investigation_action(investigation_id, action)
+        except ValueError as exc:
+            code = 409 if "Closed investigations" in str(exc) else 422
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return stored
+
+    @app.get("/api/v1/investigations/{investigation_id}/actions")
+    def get_investigation_actions(
+        investigation_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        actions = service.storage.investigation_actions(investigation_id)
+        if actions is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return {"investigation_id": investigation_id, "actions": actions}
 
     @app.patch("/api/v1/investigations/{investigation_id}")
     def update_investigation(

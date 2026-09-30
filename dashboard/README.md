@@ -22,8 +22,14 @@ Dashboard pages and their case action endpoints require the existing signed admi
 
 From a device investigation page, an administrator can create a case, inspect its timeline and status, move `OPEN` to `IN_PROGRESS`, move `IN_PROGRESS` to `RESOLVED`, then close a resolved case. The interface presents only the action valid for the current state. The Hub remains authoritative; if it rejects a transition, the page displays the returned error. Closed cases cannot be modified. No block, disconnect, quarantine, router, or firewall controls are present.
 
+For an open case, the investigation page also provides append-only analyst notes and a controlled action-category form. Notes display newest first and appear in the chronological case timeline as `ANALYST_NOTE`; action records appear as `ANALYST_ACTION`. Categories are `OBSERVED`, `INVESTIGATING`, `DEVICE_REVIEWED`, `TRAFFIC_REVIEWED`, `ADMIN_ACTION_REQUIRED`, and `RESOLVED`. The `RESOLVED` action category records a note only and does not change case lifecycle state. The dashboard uses the signed-in administrator username as the note/action author. Closed cases show existing notes but do not offer note or action forms.
+
+Analyst actions are records only: they do not automatically enforce network controls, change alert state, send investigation email, or perform firewall/router operations. Investigation notes are limited to 2,000 characters; credential-like values and structured payload-style content are rejected. Notes/actions cannot be edited or deleted.
+
 Simulator-derived deauthentication events are labeled **SIMULATION ONLY** and are not presented as observed Wi-Fi activity. Rule names and explanations retain careful terms such as “Reconnaissance-like behavior”; evidence is not presented as a confirmed attack.
 
 Investigation provides correlated evidence and context. It does not prove that an attack occurred.
 
 For host-level operations, use `rocks health` or `rocks health verbose` for service state, Hub/dashboard reachability, read-only SQLite checks, Edge buffer availability, and telemetry freshness. Service status is not equivalent to telemetry flow. Troubleshoot systemd failures with `rocks service status` and `journalctl -u rocks-hub.service`; stale telemetry may require checking Edge delivery and the authorized SPAN/TAP observation path. These diagnostics do not change services or network configuration, and a healthy ROCKS installation does not assert that the monitored network is healthy.
+
+Authenticated note and action APIs are available under `/api/v1/dashboard/investigations/{investigation_id}/notes` and `/api/v1/dashboard/investigations/{investigation_id}/actions`; the corresponding Hub API uses `/api/v1/investigations/{investigation_id}/notes` and `/actions` with the existing bearer-key authentication.

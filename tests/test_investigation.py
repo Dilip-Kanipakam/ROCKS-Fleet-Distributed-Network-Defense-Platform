@@ -421,5 +421,78 @@ def test_investigation_cli_uses_configured_local_database(tmp_path, monkeypatch,
     assert json.loads(capsys.readouterr().out)["status"] == "RESOLVED"
     assert main(["investigation", "timeline", case_id]) == 0
     assert json.loads(capsys.readouterr().out)[0]["event_type"] == "INVESTIGATION_CREATED"
+    from rocks.hub.investigation import validate_analyst_note
+
+    storage.add_investigation_note(
+        case_id,
+        validate_analyst_note({"note_text": "CLI review completed."}, author="admin"),
+    )
+    assert main(["investigation", "notes", case_id]) == 0
+    assert "CLI review completed." in capsys.readouterr().out
     assert main(["investigation", "close", case_id]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "CLOSED"
+
+
+def test_analyst_notes_actions_api_timeline_validation_and_append_only(tmp_path):
+    client, service, api_key, _ = investigation_client(tmp_path)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    case = client.post(
+        "/api/v1/investigations", json={"title": "Analyst record test", "device_id": "DEVICE-NOTES"}, headers=headers
+    ).json()
+    case_id = case["investigation_id"]
+    notes_url = f"/api/v1/investigations/{case_id}/notes"
+    actions_url = f"/api/v1/investigations/{case_id}/actions"
+
+    assert client.post(notes_url, json={"note_text": "Unauthenticated note"}).status_code == 401
+    note = client.post(
+        notes_url,
+        json={"note_text": "Reviewed the stored flow counters.", "category": "TRAFFIC_REVIEWED"},
+        headers=headers,
+    )
+    assert note.status_code == 201
+    assert note.json()["author"] == "hub-api"
+    assert note.json()["category"] == "TRAFFIC_REVIEWED"
+
+    action = client.post(
+        actions_url,
+        json={"category": "ADMIN_ACTION_REQUIRED", "message": "Escalate for authorized review."},
+        headers=headers,
+    )
+    assert action.status_code == 201
+    assert action.json()["category"] == "ADMIN_ACTION_REQUIRED"
+    assert service.storage.investigation_actions(case_id)[0]["message"] == "Escalate for authorized review."
+    assert client.get(notes_url, headers=headers).json()["notes"][0]["note_id"] == note.json()["note_id"]
+    assert client.get(actions_url, headers=headers).json()["actions"][0]["action_id"] == action.json()["action_id"]
+
+    second_note = client.post(notes_url, json={"note_text": "Second note."}, headers=headers)
+    assert second_note.status_code == 201
+    notes = client.get(notes_url, headers=headers).json()["notes"]
+    assert [item["note_text"] for item in notes] == ["Second note.", "Reviewed the stored flow counters."]
+    assert client.put(notes_url, json={"note_text": "Edited"}, headers=headers).status_code == 405
+    assert client.delete(notes_url, headers=headers).status_code == 405
+
+    invalid_note_requests = [
+        ({"note_text": "x" * 2001}, 422),
+        ({"note_text": "password=secret"}, 422),
+        ({"note_text": '{"payload":"raw"}'}, 422),
+        ({"note_text": ""}, 422),
+    ]
+    for body, expected in invalid_note_requests:
+        assert client.post(notes_url, json=body, headers=headers).status_code == expected
+    assert client.post(actions_url, json={"category": "BLOCK_DEVICE"}, headers=headers).status_code == 422
+    assert client.post(actions_url, content="{", headers={**headers, "Content-Type": "application/json"}).status_code == 422
+    assert client.get("/api/v1/investigations/not-a-uuid/notes", headers=headers).status_code == 422
+
+    timeline = client.get(f"/api/v1/investigations/{case_id}/timeline", headers=headers).json()["events"]
+    assert {item["event_type"] for item in timeline} >= {"INVESTIGATION_CREATED", "ANALYST_NOTE", "ANALYST_ACTION"}
+    assert [item["timestamp"] for item in timeline] == sorted(item["timestamp"] for item in timeline)
+    assert [item["event_id"] for item in timeline if item["event_type"] == "ANALYST_NOTE"] == [
+        note.json()["note_id"], second_note.json()["note_id"]
+    ]
+
+    service.storage.update_investigation(case_id, {"status": "IN_PROGRESS"})
+    service.storage.update_investigation(case_id, {"status": "RESOLVED"})
+    assert client.post(f"/api/v1/investigations/{case_id}/close", headers=headers).status_code == 200
+    assert client.post(notes_url, json={"note_text": "Cannot append after close."}, headers=headers).status_code == 409
+    assert client.post(actions_url, json={"category": "OBSERVED"}, headers=headers).status_code == 409
+    assert len(client.get(notes_url, headers=headers).json()["notes"]) == 2

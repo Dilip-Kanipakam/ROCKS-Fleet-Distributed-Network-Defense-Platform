@@ -9,13 +9,16 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from rocks.dashboard.auth import DashboardAuthConfig, create_session, is_authenticated, parse_login_body, verify_password
+from rocks.dashboard.auth import DashboardAuthConfig, create_session, is_authenticated, parse_login_body, verify_password, verify_session
 from rocks.dashboard.service import DashboardService
 from rocks.hub.investigation import (
+    ANALYST_ACTION_CATEGORIES,
     INVESTIGATION_STATUSES,
     parse_timestamp,
     resolve_time_range,
     utc_string,
+    validate_analyst_action,
+    validate_analyst_note,
     validate_case_text,
     validate_identifier,
     validate_investigation_id,
@@ -53,6 +56,10 @@ class DashboardRoutes:
         router.add_api_route("/api/v1/dashboard/investigations", self.create_investigation, methods=["POST"])
         router.add_api_route("/api/v1/dashboard/investigations/{investigation_id}", self.update_investigation, methods=["PATCH"])
         router.add_api_route("/api/v1/dashboard/investigations/{investigation_id}/close", self.close_investigation, methods=["POST"])
+        router.add_api_route("/api/v1/dashboard/investigations/{investigation_id}/notes", self.add_investigation_note, methods=["POST"])
+        router.add_api_route("/api/v1/dashboard/investigations/{investigation_id}/notes", self.get_investigation_notes, methods=["GET"])
+        router.add_api_route("/api/v1/dashboard/investigations/{investigation_id}/actions", self.add_investigation_action, methods=["POST"])
+        router.add_api_route("/api/v1/dashboard/investigations/{investigation_id}/actions", self.get_investigation_actions, methods=["GET"])
         return router
 
     def _page_auth(self, request: Request) -> RedirectResponse | None:
@@ -145,6 +152,7 @@ class DashboardRoutes:
             "selected_case": None,
             "device_found": False,
             "case_id": case_id,
+            "action_categories": sorted(ANALYST_ACTION_CATEGORIES),
             "error": None,
         }
         try:
@@ -313,3 +321,68 @@ class DashboardRoutes:
         if case is None:
             raise HTTPException(status_code=404, detail="Investigation not found")
         return JSONResponse(case)
+
+    def _dashboard_author(self, request: Request) -> str:
+        author = verify_session(
+            request.cookies.get("rocks_dashboard_session"),
+            self.auth_config.session_secret,
+        )
+        return author or "dashboard-admin"
+
+    async def add_investigation_note(self, request: Request, investigation_id: str):
+        self._api_auth(request)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+            data = await request.json()
+            note = validate_analyst_note(data, author=self._dashboard_author(request))
+            stored = self.service.storage.add_investigation_note(investigation_id, note)
+        except (ValueError, UnicodeDecodeError) as exc:
+            conflict = "Closed investigations" in str(exc)
+            raise HTTPException(status_code=409 if conflict else 422, detail=str(exc)) from exc
+        except (sqlite3.Error, OSError):
+            raise HTTPException(status_code=503, detail="Investigation storage is temporarily unavailable")
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return JSONResponse(stored, status_code=status.HTTP_201_CREATED)
+
+    def get_investigation_notes(self, request: Request, investigation_id: str):
+        self._api_auth(request)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+            notes = self.service.storage.investigation_notes(investigation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid investigation ID") from exc
+        except (sqlite3.Error, OSError):
+            raise HTTPException(status_code=503, detail="Investigation storage is temporarily unavailable")
+        if notes is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return JSONResponse({"investigation_id": investigation_id, "notes": notes})
+
+    async def add_investigation_action(self, request: Request, investigation_id: str):
+        self._api_auth(request)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+            data = await request.json()
+            action = validate_analyst_action(data, author=self._dashboard_author(request))
+            stored = self.service.storage.add_investigation_action(investigation_id, action)
+        except (ValueError, UnicodeDecodeError) as exc:
+            conflict = "Closed investigations" in str(exc)
+            raise HTTPException(status_code=409 if conflict else 422, detail=str(exc)) from exc
+        except (sqlite3.Error, OSError):
+            raise HTTPException(status_code=503, detail="Investigation storage is temporarily unavailable")
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return JSONResponse(stored, status_code=status.HTTP_201_CREATED)
+
+    def get_investigation_actions(self, request: Request, investigation_id: str):
+        self._api_auth(request)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+            actions = self.service.storage.investigation_actions(investigation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid investigation ID") from exc
+        except (sqlite3.Error, OSError):
+            raise HTTPException(status_code=503, detail="Investigation storage is temporarily unavailable")
+        if actions is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return JSONResponse({"investigation_id": investigation_id, "actions": actions})

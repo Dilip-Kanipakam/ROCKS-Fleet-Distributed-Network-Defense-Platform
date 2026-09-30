@@ -84,6 +84,8 @@ class DashboardService:
         device_found = self.storage.investigation_device_exists(device_id)
         case = next((item for item in cases if item["investigation_id"] == case_id), None)
         case_events = self.storage.investigation_events(case_id) if case is not None else []
+        notes = self.storage.investigation_notes(case_id) if case is not None else []
+        actions = self.storage.investigation_actions(case_id) if case is not None else []
         timeline = list(evidence)
         for event in case_events or []:
             timeline.append(
@@ -116,6 +118,8 @@ class DashboardService:
             "timeline": timeline,
             "cases": cases,
             "selected_case": case,
+            "notes": notes or [],
+            "actions": actions or [],
             "alerts": alerts,
             "device_found": device_found,
         }

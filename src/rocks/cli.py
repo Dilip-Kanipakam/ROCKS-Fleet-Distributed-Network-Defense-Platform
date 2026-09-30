@@ -182,6 +182,8 @@ def build_parser() -> argparse.ArgumentParser:
     investigation_show.add_argument("investigation_id")
     investigation_timeline = investigation_subparsers.add_parser("timeline", help="show an investigation timeline")
     investigation_timeline.add_argument("investigation_id")
+    investigation_notes = investigation_subparsers.add_parser("notes", help="show analyst notes for an investigation")
+    investigation_notes.add_argument("investigation_id")
     investigation_close = investigation_subparsers.add_parser("close", help="close a resolved investigation")
     investigation_close.add_argument("investigation_id")
     demo_parser = subparsers.add_parser("demo", help="run the complete safe MVP demonstration")
@@ -845,6 +847,15 @@ def main(argv: list[str] | None = None) -> int:
                     print("Investigation not found.", file=sys.stderr)
                     return 2
                 print(json.dumps(events, indent=2))
+                return 0
+            if args.investigation_command == "notes":
+                notes = storage.investigation_notes(investigation_id)
+                if notes is None:
+                    print("Investigation not found.", file=sys.stderr)
+                    return 2
+                for note in notes:
+                    category = f" [{note['category']}]" if note["category"] else ""
+                    print(f"{note['timestamp']} {note['author']}{category}: {note['note_text']}")
                 return 0
             if args.investigation_command == "close":
                 investigation = storage.close_investigation(investigation_id)

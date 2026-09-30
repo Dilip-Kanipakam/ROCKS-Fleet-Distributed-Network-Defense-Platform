@@ -46,6 +46,30 @@
           {% if selected_case.status == 'IN_PROGRESS' %}<button type="button" data-case-action="status" data-status="RESOLVED">Resolve</button>{% endif %}
           {% if selected_case.status == 'RESOLVED' %}<button type="button" data-case-action="close">Close</button>{% endif %}
         </div>
+        <section class="analyst-notes">
+          <h3>Analyst notes</h3>
+          {% if notes %}
+          <ol class="note-list">
+            {% for note in notes %}<li><div><strong>{{ note.author }}</strong><time>{{ note.timestamp }}</time>{% if note.category %}<span class="pill">{{ note.category }}</span>{% endif %}</div><p>{{ note.note_text }}</p></li>{% endfor %}
+          </ol>
+          {% else %}<p class="muted">No analyst notes recorded.</p>{% endif %}
+          {% if selected_case.status != 'CLOSED' %}
+          <form id="analyst-note-form" class="case-form">
+            <h3>Add analyst note</h3>
+            <label class="wide-field">Note <textarea name="note_text" maxlength="2000" rows="4" required></textarea></label>
+            <label>Category (optional)
+              <select name="category"><option value="">Note only</option>{% for category in action_categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}</select>
+            </label>
+            <button type="submit">Save note</button>
+          </form>
+          <form id="analyst-action-form" class="case-form">
+            <h3>Record investigation action</h3>
+            <label>Action category <select name="category" required>{% for category in action_categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}</select></label>
+            <label>Record detail (optional) <input name="message" maxlength="500" placeholder="Short metadata-only summary"></label>
+            <button type="submit">Record action</button>
+          </form>
+          {% else %}<p class="muted">This case is closed. Notes and actions are read-only.</p>{% endif %}
+        </section>
       </div>
       {% endif %}
       <form id="create-case" class="case-form">
@@ -115,6 +139,28 @@
       });
       if (contextNode) {
         const selected = JSON.parse(contextNode.textContent);
+        const noteForm = document.getElementById('analyst-note-form');
+        if (noteForm) noteForm.addEventListener('submit', async function (event) {
+          event.preventDefault(); errorBox.hidden = true;
+          const form = new FormData(noteForm);
+          const body = {note_text: form.get('note_text')};
+          if (form.get('category')) body.category = form.get('category');
+          try {
+            await send('/api/v1/dashboard/investigations/' + encodeURIComponent(selected.id) + '/notes', 'POST', body);
+            window.location.reload();
+          } catch (error) { showError(error.message || 'Unable to save analyst note.'); }
+        });
+        const actionForm = document.getElementById('analyst-action-form');
+        if (actionForm) actionForm.addEventListener('submit', async function (event) {
+          event.preventDefault(); errorBox.hidden = true;
+          const form = new FormData(actionForm);
+          const body = {category: form.get('category')};
+          if (form.get('message')) body.message = form.get('message');
+          try {
+            await send('/api/v1/dashboard/investigations/' + encodeURIComponent(selected.id) + '/actions', 'POST', body);
+            window.location.reload();
+          } catch (error) { showError(error.message || 'Unable to record investigation action.'); }
+        });
         document.querySelectorAll('[data-case-action]').forEach(function (button) {
           button.addEventListener('click', async function () {
             errorBox.hidden = true; button.disabled = true;
