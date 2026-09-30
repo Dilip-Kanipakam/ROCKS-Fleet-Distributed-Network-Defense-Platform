@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import math
 import re
 import secrets
@@ -33,6 +34,7 @@ from rocks.hub.auth import hash_api_key
 from rocks.hub.config import get_hub_config
 from rocks.hub.registry import EdgeRegistry
 from rocks.hub.storage import HubStorage
+from rocks.hub.investigation import validate_case_text, validate_identifier, validate_investigation_id
 from rocks.logging_config import configure_logging
 from rocks.ml.config import get_ml_config
 from rocks.ml.demo import run_demo as run_ml_demo
@@ -169,6 +171,19 @@ def build_parser() -> argparse.ArgumentParser:
     alerts_subparsers.add_parser("status", help="show alert engine status")
     alerts_subparsers.add_parser("list", help="list recent alerts")
     alerts_subparsers.add_parser("email-test", help="send an explicitly requested SMTP test message")
+    investigation_parser = subparsers.add_parser("investigation", help="manage local Hub investigations")
+    investigation_subparsers = investigation_parser.add_subparsers(dest="investigation_command")
+    investigation_create = investigation_subparsers.add_parser("create", help="create an investigation")
+    investigation_create.add_argument("--title", required=True)
+    investigation_create.add_argument("--description", default="")
+    investigation_create.add_argument("--device-id")
+    investigation_create.add_argument("--sensor-id")
+    investigation_show = investigation_subparsers.add_parser("show", help="show an investigation")
+    investigation_show.add_argument("investigation_id")
+    investigation_timeline = investigation_subparsers.add_parser("timeline", help="show an investigation timeline")
+    investigation_timeline.add_argument("investigation_id")
+    investigation_close = investigation_subparsers.add_parser("close", help="close a resolved investigation")
+    investigation_close.add_argument("investigation_id")
     demo_parser = subparsers.add_parser("demo", help="run the complete safe MVP demonstration")
     demo_parser.set_defaults(demo_command=True)
     return parser
@@ -798,6 +813,50 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{alert['timestamp']}\t{alert['severity']}\t{alert['sensor_id']}\t{alert['message']}")
             return 0
         parser.parse_args(["alerts", "--help"])
+        return 0
+
+    if args.command == "investigation":
+        storage = HubStorage(get_hub_config().database_path)
+        try:
+            if args.investigation_command == "create":
+                title = validate_case_text(args.title, field="title", required=True, maximum=200)
+                description = validate_case_text(args.description, field="description", required=False, maximum=4000)
+                device_id = validate_identifier(args.device_id, field="device_id") if args.device_id else None
+                sensor_id = validate_identifier(args.sensor_id, field="sensor_id") if args.sensor_id else None
+                investigation = storage.create_investigation(
+                    title=title,
+                    description=description,
+                    device_id=device_id,
+                    sensor_id=sensor_id,
+                )
+                print(json.dumps(investigation, indent=2))
+                return 0
+            investigation_id = validate_investigation_id(args.investigation_id)
+            if args.investigation_command == "show":
+                investigation = storage.get_investigation(investigation_id)
+                if investigation is None:
+                    print("Investigation not found.", file=sys.stderr)
+                    return 2
+                print(json.dumps(investigation, indent=2))
+                return 0
+            if args.investigation_command == "timeline":
+                events = storage.investigation_events(investigation_id)
+                if events is None:
+                    print("Investigation not found.", file=sys.stderr)
+                    return 2
+                print(json.dumps(events, indent=2))
+                return 0
+            if args.investigation_command == "close":
+                investigation = storage.close_investigation(investigation_id)
+                if investigation is None:
+                    print("Investigation not found.", file=sys.stderr)
+                    return 2
+                print(json.dumps(investigation, indent=2))
+                return 0
+        except ValueError as exc:
+            print(f"ROCKS investigation error: {exc}", file=sys.stderr)
+            return 2
+        parser.parse_args(["investigation", "--help"])
         return 0
 
     if args.command == "demo":

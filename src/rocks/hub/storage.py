@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,13 @@ from typing import Any
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
 from rocks.alerts.engine import Alert
 from rocks.hub.models import EdgeInfo
-from rocks.hub.investigation import InvestigationEvent, MAX_EVENTS
+from rocks.hub.investigation import (
+    INVESTIGATION_STATUSES,
+    INVESTIGATION_TRANSITIONS,
+    CaseTimelineEvent,
+    InvestigationEvent,
+    MAX_EVENTS,
+)
 from rocks.ml.analysis import AnalysisResult
 from rocks.sqlite import connect_sqlite, enable_wal
 

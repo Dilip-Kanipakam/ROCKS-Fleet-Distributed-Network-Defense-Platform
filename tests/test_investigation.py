@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -261,3 +262,164 @@ def test_investigation_includes_detection_ml_alert_lifecycle_and_simulation_evid
     }
     assert "payload" not in response.text.lower()
     assert "smtp" not in response.text.lower()
+
+
+def test_case_api_create_retrieve_append_and_order_timeline(tmp_path):
+    client, _service, api_key, _ = investigation_client(tmp_path)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    response = client.post(
+        "/api/v1/investigations",
+        json={
+            "title": "Repeated connection failures",
+            "description": "Review the device activity around the alert.",
+            "device_id": "DEVICE-CASE-01",
+            "sensor_id": "SENSOR-A",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201
+    case = response.json()
+    investigation_id = case["investigation_id"]
+    assert case["status"] == "OPEN"
+    assert case["title"] == "Repeated connection failures"
+    assert client.get(f"/api/v1/investigations/{investigation_id}", headers=headers).json() == case
+
+    later_event = client.post(
+        f"/api/v1/investigations/{investigation_id}/events",
+        json={
+            "timestamp": "2026-09-30T12:05:00Z",
+            "event_type": "ALERT",
+            "severity": "HIGH",
+            "message": "High risk alert generated.",
+            "source": "rocks-alerts",
+            "metadata": {"alert_id": "alert-123", "telemetry_id": "telemetry-456"},
+        },
+        headers=headers,
+    )
+    earlier_event = client.post(
+        f"/api/v1/investigations/{investigation_id}/events",
+        json={
+            "timestamp": "2026-09-30T12:04:00Z",
+            "event_type": "DETECTION",
+            "message": "Suspicious flow detected.",
+            "metadata": {"assessment_id": "assessment-789"},
+        },
+        headers=headers,
+    )
+    assert later_event.status_code == 201
+    assert earlier_event.status_code == 201
+    assert later_event.json()["event_id"] != earlier_event.json()["event_id"]
+    timeline = client.get(f"/api/v1/investigations/{investigation_id}/timeline", headers=headers)
+    assert timeline.status_code == 200
+    events = timeline.json()["events"]
+    assert [event["event_type"] for event in events] == [
+        "INVESTIGATION_CREATED", "DETECTION", "ALERT"
+    ]
+    assert [event["timestamp"] for event in events] == sorted(event["timestamp"] for event in events)
+    assert events[1]["metadata"] == {"assessment_id": "assessment-789"}
+
+
+def test_case_api_status_lifecycle_and_timeline_changes(tmp_path):
+    client, _service, api_key, _ = investigation_client(tmp_path)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    case = client.post("/api/v1/investigations", json={"title": "Lifecycle test"}, headers=headers).json()
+    case_id = case["investigation_id"]
+
+    invalid = client.patch(f"/api/v1/investigations/{case_id}", json={"status": "CLOSED"}, headers=headers)
+    assert invalid.status_code == 409
+    started = client.patch(f"/api/v1/investigations/{case_id}", json={"status": "IN_PROGRESS"}, headers=headers)
+    assert started.status_code == 200
+    assert started.json()["status"] == "IN_PROGRESS"
+    resolved = client.patch(
+        f"/api/v1/investigations/{case_id}",
+        json={"status": "RESOLVED", "description": "Evidence reviewed."},
+        headers=headers,
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["description"] == "Evidence reviewed."
+    closed = client.post(f"/api/v1/investigations/{case_id}/close", headers=headers)
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "CLOSED"
+    assert client.patch(f"/api/v1/investigations/{case_id}", json={"title": "After close"}, headers=headers).status_code == 409
+    assert client.post(
+        f"/api/v1/investigations/{case_id}/events",
+        json={"event_type": "ANALYST_NOTE", "message": "Too late"},
+        headers=headers,
+    ).status_code == 409
+    timeline = client.get(f"/api/v1/investigations/{case_id}/timeline", headers=headers).json()["events"]
+    transitions = [event["metadata"]["status"] for event in timeline if event["event_type"] == "STATUS_CHANGED"]
+    assert transitions == ["IN_PROGRESS", "RESOLVED", "CLOSED"]
+
+
+def test_case_api_auth_not_found_invalid_ids_and_event_validation(tmp_path):
+    client, _service, api_key, _ = investigation_client(tmp_path)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    assert client.post("/api/v1/investigations", json={"title": "No auth"}).status_code == 401
+    assert client.post("/api/v1/investigations", json={}, headers=headers).status_code == 422
+    assert client.get("/api/v1/investigations/not-a-uuid", headers=headers).status_code == 422
+    missing_id = "00000000-0000-4000-8000-000000000001"
+    assert client.get(f"/api/v1/investigations/{missing_id}", headers=headers).status_code == 404
+    assert client.get(f"/api/v1/investigations/{missing_id}/timeline", headers=headers).status_code == 404
+    assert client.post(
+        f"/api/v1/investigations/{missing_id}/events",
+        json={"event_type": "ALERT", "message": "Missing case"},
+        headers=headers,
+    ).status_code == 404
+
+    case = client.post("/api/v1/investigations", json={"title": "Validation"}, headers=headers).json()
+    case_id = case["investigation_id"]
+    bad_events = [
+        {"event_type": "NOT_SUPPORTED", "message": "Bad type"},
+        {"event_type": "ALERT", "message": ""},
+        {"event_type": "ALERT", "message": "Bad timestamp", "timestamp": "yesterday"},
+        {"event_type": "ALERT", "message": "Secret metadata", "metadata": {"api_key": "do-not-store"}},
+        {"event_type": "ALERT", "message": "Bad metadata", "metadata": ["not", "an object"]},
+    ]
+    for event in bad_events:
+        assert client.post(f"/api/v1/investigations/{case_id}/events", json=event, headers=headers).status_code == 422
+
+
+def test_case_storage_persists_investigation_and_events_after_reload(tmp_path):
+    path = tmp_path / "persistent-cases.db"
+    original = HubStorage(path)
+    case = original.create_investigation(
+        title="Persistence test", description="Synthetic case", device_id="DEVICE-PERSIST", sensor_id="SENSOR-PERSIST"
+    )
+    from rocks.hub.investigation import validate_case_event
+
+    original.add_investigation_event(
+        case["investigation_id"],
+        validate_case_event({"event_type": "ANALYST_NOTE", "message": "Persisted note."}),
+    )
+    reloaded = HubStorage(path)
+    assert reloaded.get_investigation(case["investigation_id"])["title"] == "Persistence test"
+    persisted_events = reloaded.investigation_events(case["investigation_id"])
+    assert [event["event_type"] for event in persisted_events] == ["INVESTIGATION_CREATED", "ANALYST_NOTE"]
+
+
+def test_investigation_cli_uses_configured_local_database(tmp_path, monkeypatch, capsys):
+    from rocks.cli import main
+    from rocks.config import build_default_config, write_config
+
+    config = build_default_config()
+    database_path = tmp_path / "cli-investigations.db"
+    config.setdefault("storage", {})["hub_database"] = str(database_path)
+    config_path = write_config(config, tmp_path / "config.yaml")
+    monkeypatch.setenv("ROCKS_CONFIG_PATH", str(config_path))
+
+    with pytest.raises(SystemExit) as help_exit:
+        main(["investigation", "--help"])
+    assert help_exit.value.code == 0
+    assert "create" in capsys.readouterr().out
+    assert main(["investigation", "create", "--title", "CLI investigation", "--device-id", "DEVICE-CLI"]) == 0
+    created = capsys.readouterr().out
+    case_id = json.loads(created)["investigation_id"]
+    storage = HubStorage(database_path)
+    storage.update_investigation(case_id, {"status": "IN_PROGRESS"})
+    storage.update_investigation(case_id, {"status": "RESOLVED"})
+    assert main(["investigation", "show", case_id]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "RESOLVED"
+    assert main(["investigation", "timeline", case_id]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["event_type"] == "INVESTIGATION_CREATED"
+    assert main(["investigation", "close", case_id]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "CLOSED"

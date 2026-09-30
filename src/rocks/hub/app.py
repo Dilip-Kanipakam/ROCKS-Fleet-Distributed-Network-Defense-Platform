@@ -9,7 +9,14 @@ from fastapi.staticfiles import StaticFiles
 from rocks.hub.schemas import EdgeResponse, HealthResponse, StatsResponse, TelemetryIngestResponse, TelemetryResponse
 from rocks.hub.service import HubService
 from rocks.hub.storage import HubStorage
-from rocks.hub.investigation import resolve_time_range, validate_identifier
+from rocks.hub.investigation import (
+    INVESTIGATION_STATUSES,
+    resolve_time_range,
+    validate_case_event,
+    validate_case_text,
+    validate_identifier,
+    validate_investigation_id,
+)
 from rocks.edge.telemetry import TelemetryRecord
 from rocks.dashboard.config import get_dashboard_config
 from rocks.dashboard.routes import DashboardRoutes
@@ -130,6 +137,136 @@ def create_app(database_path: str | None = None) -> FastAPI:
             "time_range": {"start": start_at, "end": end_at},
             "events": events,
         }
+
+    @app.post("/api/v1/investigations", status_code=status.HTTP_201_CREATED)
+    def create_investigation(
+        data: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        allowed = {"title", "description", "device_id", "sensor_id"}
+        if set(data) - allowed:
+            raise HTTPException(status_code=422, detail="Investigation contains unsupported fields")
+        try:
+            title = validate_case_text(data.get("title"), field="title", required=True, maximum=200)
+            description = validate_case_text(data.get("description", ""), field="description", required=False, maximum=4000)
+            device_id = data.get("device_id")
+            sensor_id = data.get("sensor_id")
+            if device_id is not None:
+                device_id = validate_identifier(device_id, field="device_id")
+            if sensor_id is not None:
+                sensor_id = validate_identifier(sensor_id, field="sensor_id")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return service.storage.create_investigation(
+            title=title,
+            description=description,
+            device_id=device_id,
+            sensor_id=sensor_id,
+        )
+
+    @app.get("/api/v1/investigations/{investigation_id}")
+    def get_investigation(
+        investigation_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        investigation = service.storage.get_investigation(investigation_id)
+        if investigation is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return investigation
+
+    @app.post("/api/v1/investigations/{investigation_id}/events", status_code=status.HTTP_201_CREATED)
+    def add_investigation_event(
+        investigation_id: str,
+        data: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+            event = validate_case_event(data)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            stored = service.storage.add_investigation_event(investigation_id, event)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if stored is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return stored
+
+    @app.get("/api/v1/investigations/{investigation_id}/timeline")
+    def investigation_timeline(
+        investigation_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        events = service.storage.investigation_events(investigation_id)
+        if events is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return {"investigation_id": investigation_id, "events": events}
+
+    @app.patch("/api/v1/investigations/{investigation_id}")
+    def update_investigation(
+        investigation_id: str,
+        data: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        allowed = {"title", "description", "status"}
+        if not data or set(data) - allowed:
+            raise HTTPException(status_code=422, detail="Provide supported investigation fields to update")
+        changes: dict[str, Any] = {}
+        try:
+            if "title" in data:
+                changes["title"] = validate_case_text(data["title"], field="title", required=True, maximum=200)
+            if "description" in data:
+                changes["description"] = validate_case_text(data["description"], field="description", required=False, maximum=4000)
+            if "status" in data:
+                if not isinstance(data["status"], str) or data["status"] not in INVESTIGATION_STATUSES:
+                    raise ValueError("Invalid investigation status")
+                changes["status"] = data["status"]
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            investigation = service.storage.update_investigation(investigation_id, changes)
+        except ValueError as exc:
+            code = 409 if "transition" in str(exc) or "Closed investigations" in str(exc) else 422
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        if investigation is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return investigation
+
+    @app.post("/api/v1/investigations/{investigation_id}/close")
+    def close_investigation(
+        investigation_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            investigation_id = validate_investigation_id(investigation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            investigation = service.storage.close_investigation(investigation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if investigation is None:
+            raise HTTPException(status_code=404, detail="Investigation not found")
+        return investigation
 
     @app.get("/api/v1/telemetry/{telemetry_id}", response_model=TelemetryResponse)
     def get_telemetry(telemetry_id: str, authorization: str | None = Header(default=None)) -> TelemetryRecord:
