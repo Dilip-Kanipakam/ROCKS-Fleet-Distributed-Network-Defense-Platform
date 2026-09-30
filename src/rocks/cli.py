@@ -46,6 +46,8 @@ from rocks.alerts.email import EmailNotificationService, NotificationError
 from rocks.simulator.generator import Scenario, generate_records
 from rocks.service_manager import ServiceManager, ServiceManagerError
 from rocks.health import HealthChecker, HealthStatus
+from rocks.detection.config import get_detection_config
+from rocks.detection.engine import DetectionEngine
 
 
 from scapy.layers.inet import IP, TCP, UDP
@@ -76,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("test", help="run the foundation test command")
     health_parser = subparsers.add_parser("health", help="check ROCKS Fleet runtime health")
     health_parser.add_argument("view", nargs="?", choices=["check", "verbose"], default="check")
+    detection_parser = subparsers.add_parser("detection", help="inspect deterministic detection rules")
+    detection_subparsers = detection_parser.add_subparsers(dest="detection_command")
+    detection_subparsers.add_parser("status", help="show deterministic detection configuration")
+    detection_subparsers.add_parser("test", help="evaluate synthetic examples without network traffic")
     service_parser = subparsers.add_parser("service", help="manage ROCKS Linux systemd services")
     service_subparsers = service_parser.add_subparsers(dest="service_command")
     service_subparsers.add_parser("status", help="show installed and running service state")
@@ -512,6 +518,41 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Overall: {report.overall.value}")
         return report.exit_code
 
+    if args.command == "detection":
+        try:
+            detection_config = get_detection_config()
+            engine = DetectionEngine(detection_config)
+            if args.detection_command == "status":
+                print(f"Deterministic detection: {'ENABLED' if detection_config.enabled else 'DISABLED'}")
+                print(f"Window seconds: {detection_config.window_seconds:g}")
+                print(f"High traffic rate threshold: {detection_config.high_traffic_rate:g}")
+                print(f"Connection burst rate threshold: {detection_config.connection_burst_rate:g}")
+                print(f"Unique destination threshold: {detection_config.unique_destination_count}")
+                print(f"Reconnect count threshold: {detection_config.reconnect_count}")
+                print("Thresholds are deployment-specific indicators, not proof of an attack.")
+                return 0
+            if args.detection_command == "test":
+                for scenario in (
+                    Scenario.NORMAL,
+                    Scenario.HIGH_TRAFFIC,
+                    Scenario.RECONNAISSANCE_LIKE,
+                    Scenario.DNS_ANOMALY,
+                    Scenario.RECONNECT_STORM,
+                    Scenario.DEAUTH_RELATED_SIMULATION,
+                ):
+                    record = generate_records(scenario, count=1)[0]
+                    assessment = engine.assess(record)
+                    rule_ids = ", ".join(rule.rule_id for rule in assessment.rules_triggered) or "none"
+                    simulation = " [SIMULATION ONLY]" if assessment.simulation else ""
+                    print(f"{scenario.value}: {assessment.severity}; rules={rule_ids}{simulation}")
+                print("Synthetic data only; no network traffic was generated.")
+                return 0
+        except (ValueError, OSError) as exc:
+            print(f"ROCKS detection error: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+        parser.parse_args(["detection", "--help"])
+        return 0
+
     if args.command == "service":
         manager = ServiceManager()
         try:
@@ -570,8 +611,6 @@ def main(argv: list[str] | None = None) -> int:
             values.update({key: value for key, value in overrides.items() if value is not None})
             agent = EdgeAgent(EdgeAgentConfig(**values))
             if args.dry_run:
-                from rocks.simulator.generator import Scenario, generate_records
-
                 with tempfile.TemporaryDirectory(prefix="rocks-edge-dry-run-") as directory:
                     isolated_values = dict(values)
                     isolated_values["database_path"] = Path(directory) / "telemetry.db"

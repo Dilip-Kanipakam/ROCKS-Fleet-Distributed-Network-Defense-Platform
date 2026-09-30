@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,15 @@ class HubStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_analysis_anomaly_score ON telemetry_analysis(anomaly_score);
                 CREATE INDEX IF NOT EXISTS idx_analysis_retention_priority ON telemetry_analysis(retention_priority);
+                CREATE TABLE IF NOT EXISTS detection_assessments (
+                    telemetry_id TEXT PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    sensor_id TEXT NOT NULL,
+                    device_id TEXT,
+                    severity TEXT NOT NULL,
+                    assessment_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_detection_assessments_timestamp ON detection_assessments(timestamp);
                 CREATE TABLE IF NOT EXISTS alerts (
                     alert_id TEXT PRIMARY KEY,
                     telemetry_id TEXT NOT NULL,
@@ -83,6 +93,7 @@ class HubStorage:
                     notification_attempt_count INTEGER NOT NULL DEFAULT 0,
                     notification_error TEXT,
                     notification_claimed_at TEXT,
+                    assessment_json TEXT,
                     UNIQUE (telemetry_id, alert_type)
                 );
                 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
@@ -104,6 +115,7 @@ class HubStorage:
             "notification_attempt_count": "INTEGER NOT NULL DEFAULT 0",
             "notification_error": "TEXT",
             "notification_claimed_at": "TEXT",
+            "assessment_json": "TEXT",
         }
         for name, definition in notification_columns.items():
             if name not in columns:
@@ -482,15 +494,16 @@ class HubStorage:
                 (alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type,
                  severity, anomaly_score, retention_score, message, status, created_at,
                  acknowledged_at, resolved_at, notification_status, notification_sent_at,
-                 notification_attempt_count, notification_error, notification_claimed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 notification_attempt_count, notification_error, notification_claimed_at, assessment_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (alert.alert_id, alert.telemetry_id, alert.sensor_id, alert.device_id,
                  alert.timestamp, alert.alert_type, alert.severity, alert.anomaly_score,
                  alert.retention_score, alert.message, alert.status,
                  alert.created_at or _utc_now(), alert.acknowledged_at, alert.resolved_at,
                  alert.notification_status, alert.notification_sent_at,
-                 alert.notification_attempt_count, alert.notification_error, None),
+                 alert.notification_attempt_count, alert.notification_error, None,
+                 json.dumps(alert.assessment, sort_keys=True) if alert.assessment is not None else None),
             )
         return cursor.rowcount == 1
 
@@ -498,7 +511,7 @@ class HubStorage:
         self.initialize()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at, notification_status, notification_sent_at, notification_attempt_count, notification_error FROM alerts WHERE alert_id = ?",
+                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at, notification_status, notification_sent_at, notification_attempt_count, notification_error, assessment_json FROM alerts WHERE alert_id = ?",
                 (alert_id,),
             ).fetchone()
         if row is None:
@@ -522,7 +535,54 @@ class HubStorage:
             notification_sent_at=row["notification_sent_at"],
             notification_attempt_count=row["notification_attempt_count"],
             notification_error=row["notification_error"],
+            assessment=json.loads(row["assessment_json"]) if row["assessment_json"] else None,
         )
+
+    def insert_detection_assessment(self, assessment: Any) -> bool:
+        self.initialize()
+        values = assessment.to_dict()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO detection_assessments
+                (telemetry_id, timestamp, sensor_id, device_id, severity, assessment_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    values["telemetry_id"], values["timestamp"], values["sensor_id"],
+                    values["device_id"], values["severity"], json.dumps(values, sort_keys=True),
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def recent_detection_assessments(self, limit: int = 50) -> list[dict[str, Any]]:
+        bounded = min(max(int(limit), 1), 100)
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT d.telemetry_id, d.timestamp, d.sensor_id, d.device_id, d.severity,
+                       d.assessment_json, a.actual_traffic, a.expected_traffic,
+                       a.anomaly_score, a.retention_score, a.retention_priority,
+                       a.baseline_status
+                FROM detection_assessments AS d
+                LEFT JOIN telemetry_analysis AS a ON a.telemetry_id = d.telemetry_id
+                  AND a.analyzed_at = (
+                    SELECT MAX(a2.analyzed_at) FROM telemetry_analysis AS a2
+                    WHERE a2.telemetry_id = d.telemetry_id
+                  )
+                                WHERE d.severity != 'INFO'
+                ORDER BY d.timestamp DESC LIMIT ?
+                """,
+                (bounded,),
+            ).fetchall()
+        return [
+            {
+                **{key: row[key] for key in row.keys() if key != "assessment_json"},
+                "assessment": json.loads(row["assessment_json"]),
+            }
+            for row in rows
+        ]
 
     def claim_alert_notification(self, alert_id: str) -> bool:
         """Atomically allow at most one notification attempt for an alert."""
@@ -586,10 +646,16 @@ class HubStorage:
         self.initialize()
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at, notification_status, notification_sent_at, notification_attempt_count, notification_error FROM alerts ORDER BY timestamp DESC LIMIT ?",
+                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, alert_type, severity, anomaly_score, retention_score, message, status, created_at, acknowledged_at, resolved_at, notification_status, notification_sent_at, notification_attempt_count, notification_error, assessment_json FROM alerts ORDER BY timestamp DESC LIMIT ?",
                 (min(max(limit, 1), 100),),
             ).fetchall()
-        return [dict(row) for row in rows]
+        results = []
+        for row in rows:
+            result = dict(row)
+            assessment_json = result.pop("assessment_json", None)
+            result["assessment"] = json.loads(assessment_json) if assessment_json else None
+            results.append(result)
+        return results
 
     def alert_counts(self) -> dict[str, int]:
         self.initialize()

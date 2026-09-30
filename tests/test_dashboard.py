@@ -125,6 +125,34 @@ def test_alerts_api_returns_investigation_alerts(tmp_path, monkeypatch):
     assert response.json()[0]["alert_type"] == "POTENTIAL_ANOMALY"
 
 
+def test_dashboard_events_and_alerts_show_detection_evidence_and_simulation(tmp_path, monkeypatch):
+    from rocks.alerts.engine import AlertEngine
+    from rocks.detection.config import DetectionConfig
+    from rocks.detection.engine import DetectionEngine
+    from rocks.simulator.generator import Scenario, generate_records
+
+    client = make_client(tmp_path, monkeypatch)
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    service = client.app.state.hub_service
+    record = generate_records(Scenario.DEAUTH_RELATED_SIMULATION, count=1)[0]
+    service.storage.insert_telemetry(record)
+    assessment = DetectionEngine(DetectionConfig()).assess(record)
+    service.storage.insert_detection_assessment(assessment)
+    alert = AlertEngine().create_alert(None, assessment=assessment, record=record)
+    assert alert is not None
+    service.storage.insert_alert(alert)
+
+    events_page = client.get("/dashboard/events")
+    alerts_page = client.get("/dashboard/alerts")
+    alerts_api = client.get("/api/v1/dashboard/alerts")
+
+    assert "SIMULATED" in events_page.text
+    assert "DEAUTH_RELATED" in events_page.text
+    assert "802.11" not in events_page.text
+    assert "SIMULATED" in alerts_page.text
+    assert alerts_api.json()[0]["assessment"]["simulation"] is True
+
+
 def test_dashboard_alert_lifecycle_routes_and_auth(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     service = client.app.state.hub_service

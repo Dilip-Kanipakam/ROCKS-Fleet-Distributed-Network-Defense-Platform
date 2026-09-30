@@ -55,7 +55,8 @@ class DashboardService:
         return self.storage.telemetry_context(telemetry_id=telemetry_id, limit=limit)
 
     def events(self, limit: int = 50) -> list[dict[str, Any]]:
-        return self.storage.recent_analysis(limit)
+        assessments = self.storage.recent_detection_assessments(limit)
+        return assessments if assessments else self.storage.recent_analysis(limit)
 
     def traffic(self, limit: int = 20) -> list[dict[str, Any]]:
         return self.storage.traffic_points(limit)

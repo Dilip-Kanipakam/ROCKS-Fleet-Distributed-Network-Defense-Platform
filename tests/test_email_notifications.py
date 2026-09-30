@@ -114,7 +114,19 @@ def test_successful_alert_email_uses_tls_and_contains_only_alert_context():
         return instance
 
     service = EmailNotificationService(_email_config(), smtp_factory=smtp_factory)
-    alert = _alert()
+    alert = replace(
+        _alert(),
+        assessment={
+            "rules_triggered": [
+                {
+                    "rule_id": "HIGH_TRAFFIC",
+                    "evidence": {"traffic_rate": 250, "threshold": 200},
+                }
+            ],
+            "ml_anomaly": False,
+            "simulation": False,
+        },
+    )
     from rocks.edge.telemetry import TelemetryRecord
 
     telemetry = TelemetryRecord(
@@ -141,6 +153,7 @@ def test_successful_alert_email_uses_tls_and_contains_only_alert_context():
     assert "BEHAVIOR_SUMMARY" in body
     assert "DO-NOT-INCLUDE" not in body
     assert "SMTP-SUPER-SECRET" not in body
+    assert "traffic_rate=250" in body
     assert "/dashboard/telemetry/telemetry-existing-456" in body
 
 
@@ -256,7 +269,7 @@ def test_hub_ingest_sends_once_only_for_new_alert_and_preserves_on_failure(tmp_p
     )
 
     class FixedML:
-        def analyze_and_store(self, _record):
+        def analyze(self, _record):
             return analysis
 
     service.ml = FixedML()
@@ -288,7 +301,7 @@ def test_hub_ingest_success_notification_is_not_repeated_for_duplicate_alert(tmp
     analysis = analyze_behavior_summary(record, expected_traffic=1000, baseline_status="READY", analyzed_at="2026-09-29T12:00:00Z")
 
     class FixedML:
-        def analyze_and_store(self, _record):
+        def analyze(self, _record):
             return analysis
 
     service.ml = FixedML()

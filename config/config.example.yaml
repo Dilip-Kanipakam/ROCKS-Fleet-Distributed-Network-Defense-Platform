@@ -30,6 +30,18 @@ telemetry:
 health:
   telemetry_freshness_seconds: 300
 
+detection:
+  enabled: true
+  high_traffic_rate: 200
+  connection_burst_rate: 0.5
+  unique_destination_count: 20
+  unique_destination_port_count: 30
+  reconnect_count: 10
+  dns_request_rate: 2
+  dns_failure_rate: 0.3
+  deauth_count: 1
+  window_seconds: 60
+
 storage:
   database: ""
   buffer: ""

@@ -13,6 +13,8 @@ from rocks.ml.service import MLService
 from rocks.alerts.engine import AlertEngine
 from rocks.alerts.config import get_alert_config, get_email_config
 from rocks.alerts.email import EmailNotificationService, NotificationError
+from rocks.detection.config import get_detection_config
+from rocks.detection.engine import DetectionEngine
 
 
 class HubService:
@@ -29,6 +31,7 @@ class HubService:
         ) if ml_config.enabled else None
         self._logger = configure_logging()
         self.email_notifications = email_notifications or EmailNotificationService(get_email_config())
+        self.detection = DetectionEngine(get_detection_config())
         alert_config = get_alert_config()
         self.alerts = AlertEngine(
             anomaly_threshold=alert_config.anomaly_threshold,
@@ -66,18 +69,21 @@ class HubService:
     def ingest(self, record: TelemetryRecord) -> bool:
         inserted = self.storage.insert_telemetry(record)
         self.registry.touch(record.sensor_id)
-        if self.ml is not None:
+        if inserted:
             try:
-                analysis = self.ml.analyze_and_store(record)
+                analysis = self.ml.analyze(record) if self.ml is not None else None
+                assessment = self.detection.assess(record, analysis)
+                self.storage.insert_detection_assessment(assessment)
                 if analysis is not None:
-                    if self.alerts is not None:
-                        alert = self.alerts.create_alert(analysis)
-                        if alert is not None:
-                            inserted_alert = self.storage.insert_alert(alert)
-                            if inserted_alert and self.email_notifications.should_notify(alert):
-                                self._notify_alert(alert, record)
+                    self.storage.insert_analysis(analysis)
+                if self.alerts is not None:
+                    alert = self.alerts.create_alert(analysis, assessment=assessment, record=record)
+                    if alert is not None:
+                        inserted_alert = self.storage.insert_alert(alert)
+                        if inserted_alert and self.email_notifications.should_notify(alert):
+                            self._notify_alert(alert, record)
             except Exception:
-                self._logger.exception("Optional analysis or alerting failed for telemetry %s", record.record_id)
+                self._logger.exception("Optional detection, analysis, or alerting failed for telemetry %s", record.record_id)
         return inserted
 
     def _notify_alert(self, alert: Any, record: TelemetryRecord) -> None:

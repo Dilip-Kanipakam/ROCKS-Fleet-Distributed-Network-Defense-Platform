@@ -183,6 +183,14 @@ rocks alerts email-test
 
 This sends a test message only when notifications are enabled and does not create an alert. The dashboard shows `Sent`, `Failed`, `Not sent`, or `Not configured`; it does not expose SMTP credentials. Troubleshoot with `journalctl -u rocks-hub.service`. Email is not required for telemetry analysis or alert creation.
 
+## Detection and Risk Evidence
+
+ROCKS evaluates deterministic metadata rules for `HIGH_TRAFFIC`, `CONNECTION_BURST`, `RECONNAISSANCE_LIKE`, `DNS_ANOMALY`, `RECONNECT_STORM`, and explicitly evidenced `DEAUTH_RELATED` telemetry. Thresholds live under `detection` in `config/config.yaml`; defaults are starting points, not universal values, and should be tuned to each deployment's normal traffic and observation window. `ROCKS_DETECTION_*` environment variables can override individual thresholds. `high_traffic_rate` is observed bytes/second; `connection_burst_rate` and `dns_request_rate` are counts/second over `window_seconds`; destination thresholds are unique IPs/ports in a behavior-summary window; `dns_failure_rate` is the failed/request ratio from available DNS telemetry; reconnect and deauth thresholds are explicit event counts.
+
+Each assessment stores the triggered rule IDs, severity, explanation, and relevant counters/thresholds. `HIGH_TRAFFIC`, `CONNECTION_BURST`, and `DNS_ANOMALY` are `WARNING`; `RECONNAISSANCE_LIKE`, `RECONNECT_STORM`, and evidence-backed real `DEAUTH_RELATED` are `HIGH`; simulated deauth is `WARNING` and visibly marked as simulated. The overall severity is the highest triggered rule severity, promoted to `HIGH` by the existing ML anomaly threshold or `HIGH` retention priority. When the existing ML baseline is ready, its anomaly score and retention priority are reported separately; no new probability or independent combined score is invented. Deterministic rules continue to run without ML. Existing alert IDs still correlate one potential anomaly per telemetry record, and the existing lifecycle and one-time email notification behavior remain unchanged.
+
+`rocks detection status` displays active policy thresholds. `rocks detection test` evaluates safe synthetic examples only; it sends no packets and performs no attacks. The deauthentication example is explicitly marked simulation-only. Real deauthentication-related detection requires explicit 802.11 management-frame evidence; no live parser currently emits that evidence. Reconnaissance-like behavior does not prove a port scan or attack. Thresholds and anomaly scores are investigation aids, not measured accuracy or attack probabilities.
+
 ## Python virtual environment
 
 Create a virtual environment from the project root:

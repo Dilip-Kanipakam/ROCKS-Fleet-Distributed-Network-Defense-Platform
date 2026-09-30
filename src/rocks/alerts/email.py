@@ -93,11 +93,30 @@ class EmailNotificationService:
             "",
             "Summary:",
             alert.message,
-            "",
-            "Investigation:",
-            f"Open the ROCKS Command Center and inspect alert {alert.alert_id}.",
-            f"Related telemetry route: /dashboard/telemetry/{alert.telemetry_id}",
         ]
+        if alert.assessment:
+            rule_ids = [str(rule.get("rule_id", "")) for rule in alert.assessment.get("rules_triggered", []) if isinstance(rule, dict)]
+            if rule_ids:
+                lines.extend(["", f"Detection rules: {', '.join(rule_ids)}"])
+            for rule in alert.assessment.get("rules_triggered", [])[:3]:
+                if not isinstance(rule, dict):
+                    continue
+                evidence = rule.get("evidence")
+                if isinstance(evidence, dict):
+                    rendered = ", ".join(f"{key}={value}" for key, value in list(evidence.items())[:6])
+                    lines.append(f"Evidence ({rule.get('rule_id', 'rule')}): {rendered}")
+            if alert.assessment.get("ml_anomaly") is not None:
+                lines.append(f"ML anomaly signal: {'Yes' if alert.assessment['ml_anomaly'] else 'No'}")
+            if alert.assessment.get("simulation"):
+                lines.append("Simulation: Yes (synthetic evidence; not observed network activity)")
+        lines.extend(
+            [
+                "",
+                "Investigation:",
+                f"Open the ROCKS Command Center and inspect alert {alert.alert_id}.",
+                f"Related telemetry route: /dashboard/telemetry/{alert.telemetry_id}",
+            ]
+        )
         message.set_content("\n".join(lines))
         return message
 
