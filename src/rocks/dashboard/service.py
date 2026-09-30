@@ -74,3 +74,48 @@ class DashboardService:
                 label = "Not sent" if email_enabled else "Not configured"
             alert["notification_label"] = label
         return alerts
+
+    def investigation(self, device_id: str, start: str, end: str, *, sensor_id: str | None = None, case_id: str | None = None) -> dict[str, Any]:
+        evidence = self.storage.investigation_timeline(
+            device_id=device_id, start=start, end=end, sensor_id=sensor_id
+        )
+        cases = self.storage.investigations_for_device(device_id, sensor_id=sensor_id)
+        alerts = self.storage.investigation_alerts_for_device(device_id, sensor_id=sensor_id)
+        device_found = self.storage.investigation_device_exists(device_id)
+        case = next((item for item in cases if item["investigation_id"] == case_id), None)
+        case_events = self.storage.investigation_events(case_id) if case is not None else []
+        timeline = list(evidence)
+        for event in case_events or []:
+            timeline.append(
+                {
+                    "timestamp": event["timestamp"],
+                    "event_type": event["event_type"],
+                    "device_id": device_id,
+                    "sensor_id": sensor_id,
+                    "severity": event["severity"],
+                    "title": event["message"],
+                    "reason": event["source"],
+                    "reference_id": event["event_id"],
+                    "details": event["metadata"],
+                    "case_event": True,
+                }
+            )
+        for event in timeline:
+            details = event.get("details")
+            if isinstance(details, dict) and event.get("event_type") in {"TELEMETRY", "BEHAVIOR_SUMMARY"}:
+                byte_values = [details.get("bytes_sent"), details.get("bytes_received")]
+                known_values = [value for value in byte_values if isinstance(value, (int, float))]
+                if known_values:
+                    details["bytes"] = sum(known_values)
+        timeline.sort(key=lambda event: event["timestamp"])
+        return {
+            "device_id": device_id,
+            "sensor_id": sensor_id,
+            "start": start,
+            "end": end,
+            "timeline": timeline,
+            "cases": cases,
+            "selected_case": case,
+            "alerts": alerts,
+            "device_found": device_found,
+        }

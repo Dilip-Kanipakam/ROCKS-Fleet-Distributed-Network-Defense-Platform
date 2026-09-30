@@ -3,9 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from rocks.dashboard.auth import hash_password
+from rocks.alerts.engine import AlertEngine
+from rocks.detection.engine import DetectionEngine
 from rocks.edge.features import TrafficFeatures
 from rocks.edge.telemetry import behavior_summary_telemetry, telemetry_to_dict
 from rocks.edge.flow import FlowRecord
@@ -200,3 +203,174 @@ def test_dashboard_telemetry_handles_connection_unknown_received_bytes(tmp_path,
     service.storage.insert_telemetry(record)
     result = client.app.state.dashboard_service.telemetry(limit=10)
     assert result[0]["bytes"] == 150
+
+
+def test_device_investigation_page_auth_timeline_metadata_detection_ml_and_simulation(tmp_path, monkeypatch):
+    from rocks.edge.telemetry import TelemetryRecord
+    from rocks.simulator.generator import Scenario, generate_records
+
+    client = make_client(tmp_path, monkeypatch)
+    device_id = "DEVICE-DASH-01"
+    page = f"/dashboard/investigation/{device_id}"
+    assert client.get(page, follow_redirects=False).status_code == 303
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    assert client.get(page + "?start=bad").status_code == 422
+
+    service = client.app.state.hub_service
+    connection = connection_telemetry(
+        FlowRecord("192.0.2.10", "198.51.100.20", 1234, 443, "TCP", 2, 4, 2, 320),
+        "EDGE-DASH", device_id, source_mac="02:00:00:00:00:01", bytes_received=640,
+        timestamp=datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc),
+    )
+    features = TrafficFeatures(0, 60, 3, 10000, 6000, 4000, 2, 2, 1, 1, 1, 1, 0, 0, 0, 250, 0.05, device_id)
+    behavior = behavior_summary_telemetry(
+        features, "EDGE-DASH", device_id=device_id,
+        timestamp=datetime(2026, 9, 30, 12, 1, tzinfo=timezone.utc),
+    )
+    simulation = generate_records(Scenario.DEAUTH_RELATED_SIMULATION, count=1)[0]
+    simulation = TelemetryRecord(
+        "EDGE-DASH", device_id, "BEHAVIOR_SUMMARY",
+        {**simulation.payload, "simulation": True, "simulation_type": "DEAUTH_RELATED_SIMULATION", "deauth_count": 2},
+        timestamp="2026-09-30T12:02:00Z",
+    )
+    for record in (connection, behavior, simulation):
+        service.storage.insert_telemetry(record)
+
+    analysis = analyze_behavior_summary(
+        behavior, expected_traffic=1000, baseline_status="READY", analyzed_at="2026-09-30T12:01:30Z"
+    )
+    service.storage.insert_analysis(analysis)
+    assessment = DetectionEngine().assess(behavior, analysis)
+    service.storage.insert_detection_assessment(assessment)
+    simulation_assessment = DetectionEngine().assess(simulation)
+    service.storage.insert_detection_assessment(simulation_assessment)
+    alert = service.alerts.create_alert(analysis, assessment=assessment, record=behavior)
+    assert alert is not None
+    service.storage.insert_alert(alert)
+    monkeypatch.setattr(service.email_notifications, "send_alert", lambda *_args: pytest.fail("investigation sent email"))
+
+    response = client.get(
+        page,
+        params={"start": "2026-09-30T11:59:00Z", "end": "2026-09-30T12:03:00Z", "sensor_id": "EDGE-DASH"},
+    )
+    assert response.status_code == 200
+    html = response.text
+    assert "DEVICE INVESTIGATION" in html
+    assert "Sensor: EDGE-DASH" in html
+    assert "2026-09-30T11:59:00Z" in html
+    assert "192.0.2.10" in html
+    assert "198.51.100.20" in html
+    assert "1234" in html and "443" in html
+    assert "Connection Duration Ms" in html
+    assert "Bytes" in html
+    assert "High traffic activity" in html
+    assert "Rule: HIGH_TRAFFIC" in html
+    assert "Observed traffic rate was unusually high" in html
+    assert "Threshold" in html
+    assert "ML signal: Anomaly" in html
+    assert "ML baseline analysis" in html
+    assert "Deauthentication-related telemetry [SIMULATION ONLY]" in html
+    assert "SIMULATION ONLY. This is not an observed Wi-Fi event." in html
+    assert "payload" not in html.lower()
+    assert html.index("2026-09-30T12:00:00Z") < html.index("2026-09-30T12:01:00Z")
+
+
+def test_device_investigation_alert_link_and_state_are_read_only(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    service = client.app.state.hub_service
+    device_id = "DEVICE-ALERT-01"
+    record = behavior_summary_telemetry(
+        TrafficFeatures(0, 60, 1, 10000, 5000, 5000, 1, 1, 1, 1, 1, 1, 0, 0, 0, 250, 0.1, device_id),
+        "EDGE-ALERT-01", device_id=device_id,
+        timestamp=datetime(2026, 9, 30, 9, tzinfo=timezone.utc),
+    )
+    service.storage.insert_telemetry(record)
+    assessment = DetectionEngine().assess(record)
+    service.storage.insert_detection_assessment(assessment)
+    alert = AlertEngine().create_alert(None, assessment=assessment, record=record)
+    assert alert is not None
+    service.storage.insert_alert(alert)
+    monkeypatch.setattr(service.email_notifications, "send_alert", lambda *_args: pytest.fail("opening investigation sent email"))
+
+    alerts_page = client.get("/dashboard/alerts")
+    assert "Investigate Device" in alerts_page.text
+    assert f"/dashboard/investigation/{device_id}" in alerts_page.text
+    assert service.storage.get_alert(alert.alert_id).status == "OPEN"
+    investigation = client.get(f"/dashboard/investigation/{device_id}?at={record.timestamp}&sensor_id=EDGE-ALERT-01")
+    assert investigation.status_code == 200
+    assert "OPEN" in investigation.text
+    assert service.storage.get_alert(alert.alert_id).status == "OPEN"
+    assert service.storage.get_alert(alert.alert_id).notification_attempt_count == 0
+
+
+def test_dashboard_case_lifecycle_actions_and_closed_case_behavior(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    page = "/dashboard/investigation/DEVICE-CASE-UI"
+    assert client.post("/api/v1/dashboard/investigations", json={"title": "Unauthenticated"}).status_code == 401
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    create = client.post(
+        "/api/v1/dashboard/investigations",
+        json={"title": "Case from dashboard", "description": "Review synthetic evidence.", "device_id": "DEVICE-CASE-UI", "sensor_id": "EDGE-CASE-UI"},
+    )
+    assert create.status_code == 201
+    case_id = create.json()["investigation_id"]
+    case_page = client.get(page, params={"case_id": case_id})
+    assert case_page.status_code == 200
+    assert "Case from dashboard" in case_page.text
+    assert "INVESTIGATION_CREATED" in case_page.text
+    assert "OPEN" in case_page.text
+    assert "Mark In Progress" in case_page.text
+    assert "Resolve" not in case_page.text
+
+    invalid = client.patch(f"/api/v1/dashboard/investigations/{case_id}", json={"status": "CLOSED"})
+    assert invalid.status_code == 409
+    in_progress = client.patch(f"/api/v1/dashboard/investigations/{case_id}", json={"status": "IN_PROGRESS"})
+    assert in_progress.status_code == 200
+    assert "Mark In Progress" not in client.get(page, params={"case_id": case_id}).text
+    resolved = client.patch(f"/api/v1/dashboard/investigations/{case_id}", json={"status": "RESOLVED"})
+    assert resolved.status_code == 200
+    assert "Close" in client.get(page, params={"case_id": case_id}).text
+    closed = client.post(f"/api/v1/dashboard/investigations/{case_id}/close")
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "CLOSED"
+    assert "CLOSED" in client.get(page, params={"case_id": case_id}).text
+    assert "Mark In Progress" not in client.get(page, params={"case_id": case_id}).text
+    assert client.patch(f"/api/v1/dashboard/investigations/{case_id}", json={"title": "After close"}).status_code == 409
+    assert client.post(f"/api/v1/dashboard/investigations/{case_id}/close").status_code == 409
+
+
+def test_device_investigation_empty_xss_and_storage_failure_states(tmp_path, monkeypatch):
+    import sqlite3
+
+    client = make_client(tmp_path, monkeypatch)
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    empty = client.get("/dashboard/investigation/DEVICE-EMPTY")
+    assert empty.status_code == 200
+    assert "Device not found" in empty.text
+
+    service = client.app.state.hub_service
+    known_record = behavior_summary_telemetry(
+        TrafficFeatures(0, 60, 1, 100, 50, 50, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1.6, 0.01),
+        "EDGE-KNOWN", device_id="DEVICE-KNOWN",
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    service.storage.insert_telemetry(known_record)
+    known_empty = client.get(
+        "/dashboard/investigation/DEVICE-KNOWN",
+        params={"start": "2026-09-29T00:00:00Z", "end": "2026-09-30T00:00:00Z"},
+    )
+    assert known_empty.status_code == 200
+    assert "No evidence or case events" in known_empty.text
+
+    case = service.storage.create_investigation(title="<script>alert(1)</script>", device_id="DEVICE-XSS")
+    response = client.get(f"/dashboard/investigation/DEVICE-XSS?case_id={case['investigation_id']}")
+    assert response.status_code == 200
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in response.text
+    assert "<script>alert(1)</script>" not in response.text
+
+    monkeypatch.setattr(service.storage, "investigation_timeline", lambda **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("private database detail")))
+    unavailable = client.get("/dashboard/investigation/DEVICE-EMPTY")
+    assert unavailable.status_code == 503
+    assert "temporarily unavailable" in unavailable.text
+    assert "private database detail" not in unavailable.text

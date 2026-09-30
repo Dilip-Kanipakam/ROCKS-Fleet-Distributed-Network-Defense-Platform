@@ -128,7 +128,7 @@ class HubStorage:
             rows = connection.execute(
                 """
                 WITH scoped_telemetry AS (
-                    SELECT id, timestamp, sensor_id, device_id, event_type
+                    SELECT id, timestamp, sensor_id, device_id, event_type, payload_json
                     FROM telemetry
                     WHERE device_id = ? AND timestamp >= ? AND timestamp <= ?
                       AND (? IS NULL OR sensor_id = ?)
@@ -149,7 +149,24 @@ class HubStorage:
                            CASE WHEN event_type = 'BEHAVIOR_SUMMARY' THEN 'BEHAVIOR_SUMMARY' ELSE 'TELEMETRY' END AS event_type,
                            device_id, sensor_id, NULL AS severity,
                            CASE WHEN event_type = 'BEHAVIOR_SUMMARY' THEN 'Behavior summary' ELSE event_type || ' telemetry' END AS title,
-                           NULL AS reason, id AS reference_id, NULL AS details_json
+                           NULL AS reason, id AS reference_id,
+                           json_object(
+                               'source_ip', COALESCE(json_extract(payload_json, '$.payload.source.ip'), json_extract(payload_json, '$.payload.source_ip')),
+                               'destination_ip', COALESCE(json_extract(payload_json, '$.payload.destination.ip'), json_extract(payload_json, '$.payload.destination_ip')),
+                               'source_port', COALESCE(json_extract(payload_json, '$.payload.source.port'), json_extract(payload_json, '$.payload.source_port')),
+                               'destination_port', COALESCE(json_extract(payload_json, '$.payload.destination.port'), json_extract(payload_json, '$.payload.destination_port')),
+                               'protocol', json_extract(payload_json, '$.payload.protocol'),
+                               'packet_count', json_extract(payload_json, '$.payload.packet_count'),
+                               'bytes_sent', json_extract(payload_json, '$.payload.bytes_sent'),
+                               'bytes_received', json_extract(payload_json, '$.payload.bytes_received'),
+                               'connection_duration_ms', json_extract(payload_json, '$.payload.connection_duration_ms'),
+                               'request_count', json_extract(payload_json, '$.payload.request_count'),
+                               'failure_count', json_extract(payload_json, '$.payload.failure_count'),
+                               'reconnect_count', json_extract(payload_json, '$.payload.reconnect_count'),
+                               'connection_failure_count', json_extract(payload_json, '$.payload.connection_failure_count'),
+                               'unique_destination_ip_count', json_extract(payload_json, '$.payload.unique_destination_ip_count'),
+                               'unique_destination_port_count', json_extract(payload_json, '$.payload.unique_destination_port_count')
+                           ) AS details_json
                     FROM scoped_telemetry
                     UNION ALL
                     SELECT d.timestamp, 'DETECTION', d.device_id, d.sensor_id, d.severity,

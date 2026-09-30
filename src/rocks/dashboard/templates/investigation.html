@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Device Investigation | ROCKS</title>
+  <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><p class="eyebrow">ROCKS COMMAND CENTER</p><h1>DEVICE INVESTIGATION</h1><p class="subtitle">{{ device_id }}</p></div>
+    <nav class="page-nav"><a class="ghost" href="/dashboard/alerts">Alerts</a><a class="ghost" href="/dashboard/events">Events</a><a class="ghost" href="/dashboard">Dashboard</a></nav>
+  </header>
+  <main class="shell">
+    {% if error %}<p class="notice error" role="alert">{{ error }}</p>{% endif %}
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">DEVICE AND TIME RANGE</p><h2>{{ device_id }}</h2></div><span class="muted">Sensor: {{ sensor_id or 'All available sensors' }}</span></div>
+      <form class="range-form" method="get">
+        <label>Start <input type="text" name="start" value="{{ start }}" placeholder="2026-09-30T12:00:00Z"></label>
+        <label>End <input type="text" name="end" value="{{ end }}" placeholder="2026-09-30T13:00:00Z"></label>
+        {% if sensor_id %}<input type="hidden" name="sensor_id" value="{{ sensor_id }}">{% endif %}
+        <button type="submit">Apply range</button>
+      </form>
+      {% if start and end %}<p class="muted">{{ start }} to {{ end }}</p>{% endif %}
+      <div class="state-strip">
+        <div><span class="muted">Current alert state</span><strong>{% if alerts %}{% for alert in alerts %}{{ alert.status }}{% if not loop.last %} · {% endif %}{% endfor %}{% else %}No alerts in stored device context{% endif %}</strong></div>
+        <div><span class="muted">Investigation cases</span><strong>{% if cases %}{% for case in cases %}{{ case.status }}{% if not loop.last %} · {% endif %}{% endfor %}{% else %}No cases{% endif %}</strong></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">CASE LIFECYCLE</p><h2>Investigations</h2></div><span class="muted">OPEN → IN_PROGRESS → RESOLVED → CLOSED</span></div>
+      {% if cases %}
+      <ul class="case-list">
+        {% for case in cases %}
+        <li><a href="/dashboard/investigation/{{ device_id|urlencode }}?sensor_id={{ sensor_id|urlencode if sensor_id else '' }}&case_id={{ case.investigation_id|urlencode }}{% if start %}&start={{ start|urlencode }}{% endif %}{% if end %}&end={{ end|urlencode }}{% endif %}">{{ case.title }}</a><span class="pill {{ case.status|lower }}">{{ case.status }}</span><small>{{ case.updated_at }}</small></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if selected_case %}
+      <div class="case-current">
+        <p><strong>{{ selected_case.title }}</strong> <span class="pill {{ selected_case.status|lower }}">{{ selected_case.status }}</span></p>
+        {% if selected_case.description %}<p>{{ selected_case.description }}</p>{% endif %}
+        <div class="action-row">
+          {% if selected_case.status == 'OPEN' %}<button type="button" data-case-action="status" data-status="IN_PROGRESS">Mark In Progress</button>{% endif %}
+          {% if selected_case.status == 'IN_PROGRESS' %}<button type="button" data-case-action="status" data-status="RESOLVED">Resolve</button>{% endif %}
+          {% if selected_case.status == 'RESOLVED' %}<button type="button" data-case-action="close">Close</button>{% endif %}
+        </div>
+      </div>
+      {% endif %}
+      <form id="create-case" class="case-form">
+        <h3>Create investigation</h3>
+        <label>Title <input name="title" maxlength="200" required></label>
+        <label>Description <textarea name="description" maxlength="4000" rows="3"></textarea></label>
+        <button type="submit">Create investigation</button>
+      </form>
+      <p id="case-error" class="notice error" role="alert" hidden></p>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">CHRONOLOGICAL EVIDENCE</p><h2>Timeline</h2></div><span class="muted">{{ timeline|length }} events</span></div>
+      {% if not device_found %}<p class="muted">Device not found in stored telemetry, alerts, or investigations.</p>{% elif not timeline %}<p class="muted">No evidence or case events are available for this device and time range.</p>{% endif %}
+      <ol class="timeline">
+        {% for event in timeline %}
+        <li class="timeline-event">
+          <div class="timeline-time"><time>{{ event.timestamp }}</time><span class="pill">{{ event.event_type }}</span>{% if event.severity %}<span class="pill {{ event.severity|lower }}">{{ event.severity }}</span>{% endif %}</div>
+          <h3>{% if event.event_type == 'DETECTION' and event.details and event.details.simulation %}Deauthentication-related telemetry [SIMULATION ONLY]{% else %}{{ event.title }}{% endif %}</h3>
+          {% if event.reason %}<p>{{ event.reason }}</p>{% endif %}
+          {% if event.case_event and event.details %}<dl class="detail-grid">{% for key, value in event.details.items() %}<dt>{{ key.replace('_', ' ')|title }}</dt><dd>{{ value|tojson }}</dd>{% endfor %}</dl>{% endif %}
+          {% if event.event_type == 'DETECTION' and event.details %}
+            {% for rule in event.details.rules_triggered or [] %}
+            <div class="evidence-block"><strong>{{ rule.title }}{% if rule.simulation %} [SIMULATION ONLY]{% endif %}</strong><p>{{ rule.reason }}</p><p>Rule: {{ rule.rule_id }} · Severity: {{ rule.severity }}</p><dl class="detail-grid">{% for key, value in rule.evidence.items() %}<dt>{{ key.replace('_', ' ')|title }}</dt><dd>{{ value }}</dd>{% endfor %}</dl><details><summary>Structured evidence</summary><pre>{{ rule.evidence|tojson(indent=2) }}</pre></details></div>
+            {% endfor %}
+            <p>ML signal: {% if event.details.ml_anomaly is none %}Unavailable{% elif event.details.ml_anomaly %}Anomaly{% else %}No anomaly{% endif %}{% if event.details.ml_score is not none %} · Score {{ event.details.ml_score }}{% endif %}{% if event.details.ml_retention_priority %} · Retention {{ event.details.ml_retention_priority }}{% endif %}</p>
+            {% if event.details.simulation %}<p class="simulation-label">SIMULATION ONLY. This is not an observed Wi-Fi event.</p>{% endif %}
+          {% elif event.event_type in ['TELEMETRY', 'BEHAVIOR_SUMMARY'] and event.details %}
+            <dl class="detail-grid">
+              {% for key, value in event.details.items() %}{% if value is not none %}<dt>{{ key.replace('_', ' ')|title }}</dt><dd>{{ value }}</dd>{% endif %}{% endfor %}
+            </dl>
+          {% elif event.event_type == 'ML_ANALYSIS' and event.details %}
+            <dl class="detail-grid">{% for key, value in event.details.items() %}{% if value is not none %}<dt>{{ key.replace('_', ' ')|title }}</dt><dd>{{ value }}</dd>{% endif %}{% endfor %}</dl>
+          {% elif event.event_type.startswith('ALERT') and event.details %}
+            <p>Alert state: {{ event.details.status or event.event_type.replace('ALERT_', '') }}</p>
+            {% if event.details.telemetry_id %}<a href="/dashboard/telemetry/{{ event.details.telemetry_id }}">View triggering telemetry</a>{% endif %}
+          {% endif %}
+          <small class="muted">Reference: {{ event.reference_id }}</small>
+        </li>
+        {% endfor %}
+      </ol>
+      <p class="note">Investigation provides correlated evidence and context. It does not prove that an attack occurred.</p>
+    </section>
+  </main>
+  {% if selected_case %}<script id="case-context" type="application/json">{{ {'id': selected_case.investigation_id, 'device': device_id, 'sensor': sensor_id, 'start': start, 'end': end}|tojson }}</script>{% endif %}
+  <script>
+    (function () {
+      const errorBox = document.getElementById('case-error');
+      const contextNode = document.getElementById('case-context');
+      function showError(message) { errorBox.textContent = message; errorBox.hidden = false; }
+      async function send(url, method, body) {
+        const response = await fetch(url, {method: method, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Investigation action failed.');
+        return data;
+      }
+      document.getElementById('create-case').addEventListener('submit', async function (event) {
+        event.preventDefault(); errorBox.hidden = true;
+        const form = new FormData(event.currentTarget);
+        try {
+          const created = await send('/api/v1/dashboard/investigations', 'POST', {
+            title: form.get('title'), description: form.get('description'),
+            device_id: {{ device_id|tojson }}, sensor_id: {{ sensor_id|tojson }}
+          });
+          const url = new URL(window.location.href); url.searchParams.set('case_id', created.investigation_id); window.location.assign(url);
+        } catch (error) { showError(error.message || 'Investigation service is unavailable.'); }
+      });
+      if (contextNode) {
+        const selected = JSON.parse(contextNode.textContent);
+        document.querySelectorAll('[data-case-action]').forEach(function (button) {
+          button.addEventListener('click', async function () {
+            errorBox.hidden = true; button.disabled = true;
+            try {
+              if (button.dataset.caseAction === 'close') await send('/api/v1/dashboard/investigations/' + encodeURIComponent(selected.id) + '/close', 'POST');
+              else await send('/api/v1/dashboard/investigations/' + encodeURIComponent(selected.id), 'PATCH', {status: button.dataset.status});
+              window.location.reload();
+            } catch (error) { button.disabled = false; showError(error.message || 'Investigation service is unavailable.'); }
+          });
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
