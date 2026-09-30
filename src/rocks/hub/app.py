@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from rocks.hub.schemas import EdgeResponse, HealthResponse, StatsResponse, TelemetryIngestResponse, TelemetryResponse
 from rocks.hub.service import HubService
 from rocks.hub.storage import HubStorage
+from rocks.hub.investigation import resolve_time_range, validate_identifier
 from rocks.edge.telemetry import TelemetryRecord
 from rocks.dashboard.config import get_dashboard_config
 from rocks.dashboard.routes import DashboardRoutes
@@ -101,6 +102,34 @@ def create_app(database_path: str | None = None) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/investigations")
+    def investigate_device(
+        authorization: str | None = Header(default=None),
+        device_id: str = Query(..., min_length=1, max_length=128),
+        start: str | None = None,
+        end: str | None = None,
+        sensor_id: str | None = Query(default=None, min_length=1, max_length=128),
+    ) -> dict[str, Any]:
+        authenticate_query(authorization)
+        try:
+            device_id = validate_identifier(device_id, field="device_id")
+            if sensor_id is not None:
+                sensor_id = validate_identifier(sensor_id, field="sensor_id")
+            start_at, end_at = resolve_time_range(start, end)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        events = service.storage.investigation_timeline(
+            device_id=device_id,
+            start=start_at,
+            end=end_at,
+            sensor_id=sensor_id,
+        )
+        return {
+            "device": {"device_id": device_id, "sensor_id": sensor_id},
+            "time_range": {"start": start_at, "end": end_at},
+            "events": events,
+        }
 
     @app.get("/api/v1/telemetry/{telemetry_id}", response_model=TelemetryResponse)
     def get_telemetry(telemetry_id: str, authorization: str | None = Header(default=None)) -> TelemetryRecord:

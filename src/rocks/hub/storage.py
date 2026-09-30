@@ -9,6 +9,7 @@ from typing import Any
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
 from rocks.alerts.engine import Alert
 from rocks.hub.models import EdgeInfo
+from rocks.hub.investigation import InvestigationEvent, MAX_EVENTS
 from rocks.ml.analysis import AnalysisResult
 from rocks.sqlite import connect_sqlite, enable_wal
 
@@ -49,6 +50,7 @@ class HubStorage:
                 CREATE INDEX IF NOT EXISTS idx_hub_telemetry_device_id ON telemetry(device_id);
                 CREATE INDEX IF NOT EXISTS idx_hub_telemetry_event_type ON telemetry(event_type);
                 CREATE INDEX IF NOT EXISTS idx_hub_telemetry_sensor_timestamp ON telemetry(sensor_id, timestamp);
+                CREATE INDEX IF NOT EXISTS idx_hub_telemetry_device_timestamp ON telemetry(device_id, timestamp);
                 CREATE TABLE IF NOT EXISTS telemetry_analysis (
                     telemetry_id TEXT NOT NULL,
                     model_version TEXT NOT NULL,
@@ -73,6 +75,7 @@ class HubStorage:
                     assessment_json TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_detection_assessments_timestamp ON detection_assessments(timestamp);
+                CREATE INDEX IF NOT EXISTS idx_detection_device_timestamp ON detection_assessments(device_id, timestamp);
                 CREATE TABLE IF NOT EXISTS alerts (
                     alert_id TEXT PRIMARY KEY,
                     telemetry_id TEXT NOT NULL,
@@ -99,9 +102,119 @@ class HubStorage:
                 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
                 CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
                 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
+                CREATE INDEX IF NOT EXISTS idx_alerts_device_timestamp ON alerts(device_id, timestamp);
                 """
             )
             self._ensure_alert_columns(connection)
+
+    def investigation_timeline(
+        self,
+        *,
+        device_id: str,
+        start: str,
+        end: str,
+        sensor_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return bounded metadata and assessment evidence for one device."""
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                WITH scoped_telemetry AS (
+                    SELECT id, timestamp, sensor_id, device_id, event_type
+                    FROM telemetry
+                    WHERE device_id = ? AND timestamp >= ? AND timestamp <= ?
+                      AND (? IS NULL OR sensor_id = ?)
+                ), scoped_alerts AS (
+                    SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp,
+                           alert_type, severity, message, status, acknowledged_at, resolved_at
+                    FROM alerts
+                    WHERE device_id = ?
+                      AND (? IS NULL OR sensor_id = ?)
+                      AND ((timestamp >= ? AND timestamp <= ?)
+                        OR (acknowledged_at >= ? AND acknowledged_at <= ?)
+                        OR (resolved_at >= ? AND resolved_at <= ?))
+                )
+                SELECT timestamp, event_type, device_id, sensor_id, severity, title,
+                       reason, reference_id, details_json
+                FROM (
+                    SELECT timestamp,
+                           CASE WHEN event_type = 'BEHAVIOR_SUMMARY' THEN 'BEHAVIOR_SUMMARY' ELSE 'TELEMETRY' END AS event_type,
+                           device_id, sensor_id, NULL AS severity,
+                           CASE WHEN event_type = 'BEHAVIOR_SUMMARY' THEN 'Behavior summary' ELSE event_type || ' telemetry' END AS title,
+                           NULL AS reason, id AS reference_id, NULL AS details_json
+                    FROM scoped_telemetry
+                    UNION ALL
+                    SELECT d.timestamp, 'DETECTION', d.device_id, d.sensor_id, d.severity,
+                           COALESCE(json_extract(d.assessment_json, '$.rules_triggered[0].title'), 'Detection assessment'),
+                           COALESCE(json_extract(d.assessment_json, '$.explanation[0]'), json_extract(d.assessment_json, '$.reasons[0]')),
+                           d.telemetry_id, d.assessment_json
+                    FROM detection_assessments AS d
+                    WHERE d.device_id = ? AND d.timestamp >= ? AND d.timestamp <= ?
+                      AND (? IS NULL OR d.sensor_id = ?)
+                    UNION ALL
+                    SELECT t.timestamp, 'ML_ANALYSIS', t.device_id, t.sensor_id, NULL,
+                           'ML baseline analysis',
+                           a.baseline_status,
+                           a.telemetry_id,
+                           json_object('model_version', a.model_version,
+                               'baseline_status', a.baseline_status,
+                               'actual_traffic', a.actual_traffic,
+                               'expected_traffic', a.expected_traffic,
+                               'deviation', a.deviation,
+                               'anomaly_score', a.anomaly_score,
+                               'retention_score', a.retention_score,
+                               'retention_priority', a.retention_priority,
+                               'analyzed_at', a.analyzed_at)
+                    FROM telemetry_analysis AS a
+                    JOIN scoped_telemetry AS t ON t.id = a.telemetry_id
+                    UNION ALL
+                    SELECT timestamp, 'ALERT', device_id, sensor_id, severity, message,
+                           alert_type, alert_id,
+                           json_object('alert_type', alert_type, 'status', status, 'telemetry_id', telemetry_id)
+                    FROM scoped_alerts
+                    WHERE timestamp >= ? AND timestamp <= ?
+                    UNION ALL
+                    SELECT acknowledged_at, 'ALERT_ACKNOWLEDGED', device_id, sensor_id, severity,
+                           'Alert acknowledged', 'Alert status changed to ACKNOWLEDGED.', alert_id,
+                           json_object('alert_type', alert_type, 'telemetry_id', telemetry_id)
+                    FROM scoped_alerts
+                    WHERE acknowledged_at >= ? AND acknowledged_at <= ?
+                    UNION ALL
+                    SELECT resolved_at, 'ALERT_RESOLVED', device_id, sensor_id, severity,
+                           'Alert resolved', 'Alert status changed to RESOLVED.', alert_id,
+                           json_object('alert_type', alert_type, 'telemetry_id', telemetry_id)
+                    FROM scoped_alerts
+                    WHERE resolved_at >= ? AND resolved_at <= ?
+                )
+                ORDER BY timestamp ASC, event_type ASC, reference_id ASC
+                LIMIT ?
+                """,
+                (
+                    device_id, start, end, sensor_id, sensor_id,
+                    device_id, sensor_id, sensor_id, start, end, start, end, start, end,
+                    device_id, start, end, sensor_id, sensor_id,
+                    start, end, start, end, start, end,
+                    MAX_EVENTS,
+                ),
+            ).fetchall()
+        result = []
+        for row in rows:
+            details = json.loads(row["details_json"]) if row["details_json"] else None
+            result.append(
+                InvestigationEvent(
+                    timestamp=row["timestamp"],
+                    event_type=row["event_type"],
+                    device_id=row["device_id"],
+                    sensor_id=row["sensor_id"],
+                    severity=row["severity"],
+                    title=row["title"],
+                    reason=row["reason"],
+                    reference_id=row["reference_id"],
+                    details=details,
+                ).to_dict()
+            )
+        return result
 
     def _ensure_alert_columns(self, connection: sqlite3.Connection) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(alerts)").fetchall()}

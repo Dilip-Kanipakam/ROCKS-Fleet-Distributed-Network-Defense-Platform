@@ -6,12 +6,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rocks.dashboard.auth import hash_password
+from rocks.alerts.engine import Alert
+from rocks.detection.engine import DetectionEngine
+from rocks.detection.config import DetectionConfig
 from rocks.edge.features import TrafficFeatures
 from rocks.edge.flow import FlowRecord
-from rocks.edge.telemetry import behavior_summary_telemetry, connection_telemetry, dns_telemetry, telemetry_to_dict
+from rocks.edge.telemetry import TelemetryRecord, behavior_summary_telemetry, connection_telemetry, dns_telemetry, telemetry_to_dict
 from rocks.hub.app import create_app
 from rocks.hub.storage import HubStorage
-from rocks.ml.analysis import analyze_behavior_summary
+from rocks.ml.analysis import AnalysisResult, analyze_behavior_summary
 
 
 def summary(sensor: str, device: str | None, timestamp: datetime, amount: int = 100):
@@ -110,3 +113,151 @@ def test_dashboard_context_route_requires_session_and_renders_related_activity(t
     assert "Related recent telemetry" in response.text
     assert "DEVICE-A" in response.text
     assert "payload" not in response.text.lower()
+
+
+def investigation_record(sensor_id: str, device_id: str, timestamp: str, *, event_type: str = "BEHAVIOR_SUMMARY", **payload):
+    values = {"packet_count": 10, "traffic_rate": 1.0, "connection_count": 1}
+    values.update(payload)
+    return TelemetryRecord(sensor_id, device_id, event_type, values, timestamp=timestamp)
+
+
+def investigation_client(tmp_path):
+    app = create_app(str(tmp_path / "investigation.db"))
+    service = app.state.hub_service
+    _, api_key = service.registry.register("SENSOR-A")
+    _, second_key = service.registry.register("SENSOR-B")
+    return TestClient(app), service, api_key, second_key
+
+
+def test_investigation_api_filters_exact_device_sensor_and_time_in_order(tmp_path):
+    client, service, api_key, _ = investigation_client(tmp_path)
+    device = "192.0.2.10|02:00:00:00:00:01"
+    same_ip_other_device = "192.0.2.10|02:00:00:00:00:02"
+    records = [
+        investigation_record("SENSOR-A", device, "2026-01-01T12:00:00Z"),
+        investigation_record("SENSOR-B", device, "2026-01-01T12:01:00Z"),
+        investigation_record("SENSOR-A", same_ip_other_device, "2026-01-01T12:01:30Z"),
+        investigation_record("SENSOR-A", device, "2026-01-01T12:02:00Z"),
+        investigation_record("SENSOR-A", device, "2026-01-01T10:00:00Z"),
+    ]
+    for record in records:
+        service.storage.insert_telemetry(record)
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    query = {"device_id": device, "start": "2026-01-01T11:00:00Z", "end": "2026-01-01T12:02:00Z"}
+    response = client.get("/api/v1/investigations", params=query, headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["device"]["device_id"] == device
+    assert [event["timestamp"] for event in body["events"]] == [
+        "2026-01-01T12:00:00Z", "2026-01-01T12:01:00Z", "2026-01-01T12:02:00Z"
+    ]
+    assert {event["device_id"] for event in body["events"]} == {device}
+    assert all(event["event_type"] == "BEHAVIOR_SUMMARY" for event in body["events"])
+
+    sensor_response = client.get(
+        "/api/v1/investigations",
+        params={**query, "sensor_id": "SENSOR-A", "start": "2026-01-01T12:00:00Z", "end": "2026-01-01T12:02:00Z"},
+        headers=headers,
+    )
+    assert [event["sensor_id"] for event in sensor_response.json()["events"]] == ["SENSOR-A", "SENSOR-A"]
+    assert len(sensor_response.json()["events"]) == 2
+
+
+def test_investigation_api_auth_validation_empty_and_bounded_windows(tmp_path):
+    client, _service, api_key, _ = investigation_client(tmp_path)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    endpoint = "/api/v1/investigations"
+    assert client.get(endpoint, params={"device_id": "DEVICE-A"}).status_code == 401
+    assert client.get(endpoint, params={"device_id": "DEVICE-A"}, headers={"Authorization": "Bearer invalid"}).status_code == 401
+
+    empty = client.get(endpoint, params={"device_id": "DEVICE-A"}, headers=headers)
+    assert empty.status_code == 200
+    assert empty.json()["events"] == []
+    default_range = empty.json()["time_range"]
+    assert 23 * 3600 < (datetime.fromisoformat(default_range["end"].replace("Z", "+00:00")) - datetime.fromisoformat(default_range["start"].replace("Z", "+00:00"))).total_seconds() <= 24 * 3600
+
+    assert client.get(endpoint, params={"device_id": "bad/id"}, headers=headers).status_code == 422
+    assert client.get(endpoint, params={"device_id": "DEVICE-A", "sensor_id": "bad/id"}, headers=headers).status_code == 422
+    assert client.get(endpoint, params={"device_id": "DEVICE-A", "start": "yesterday"}, headers=headers).status_code == 422
+    assert client.get(endpoint, params={"device_id": "DEVICE-A", "start": "2026-01-01T00:00:00"}, headers=headers).status_code == 422
+    assert client.get(endpoint, params={"device_id": "DEVICE-A", "start": "2026-01-02T00:00:00Z", "end": "2026-01-01T00:00:00Z"}, headers=headers).status_code == 422
+
+    seven_days = client.get(
+        endpoint,
+        params={"device_id": "DEVICE-A", "start": "2026-01-01T00:00:00Z", "end": "2026-01-08T00:00:00Z"},
+        headers=headers,
+    )
+    assert seven_days.status_code == 200
+    too_wide = client.get(
+        endpoint,
+        params={"device_id": "DEVICE-A", "start": "2026-01-01T00:00:00Z", "end": "2026-01-08T00:00:01Z"},
+        headers=headers,
+    )
+    assert too_wide.status_code == 422
+
+
+def test_investigation_includes_detection_ml_alert_lifecycle_and_simulation_evidence(tmp_path, monkeypatch):
+    client, service, api_key, _ = investigation_client(tmp_path)
+    detector = DetectionEngine(DetectionConfig())
+    base_time = "2026-01-01T12:00:00Z"
+    without_ml = investigation_record("SENSOR-A", "DEVICE-A", base_time, traffic_rate=250)
+    with_ml = investigation_record("SENSOR-A", "DEVICE-A", "2026-01-01T12:01:00Z", traffic_rate=5)
+    simulated = investigation_record(
+        "SENSOR-A", "DEVICE-A", "2026-01-01T12:02:00Z",
+        simulation=True, simulation_type="DEAUTH_RELATED_SIMULATION", deauth_count=3,
+    )
+    ordinary_telemetry = investigation_record(
+        "SENSOR-A", "DEVICE-A", "2026-01-01T12:00:30Z", event_type="CONNECTION",
+    )
+    for record in (without_ml, with_ml, simulated, ordinary_telemetry):
+        service.storage.insert_telemetry(record)
+
+    no_ml_assessment = detector.assess(without_ml)
+    ml_analysis = AnalysisResult(
+        telemetry_id=with_ml.record_id, sensor_id=with_ml.sensor_id, device_id=with_ml.device_id,
+        timestamp=with_ml.timestamp, model_version="test-model", baseline_status="READY",
+        actual_traffic=1000, expected_traffic=100, deviation=9, anomaly_score=0.82,
+        retention_score=0.82, retention_priority="HIGH", analyzed_at=with_ml.timestamp,
+    )
+    ml_assessment = detector.assess(with_ml, ml_analysis)
+    simulation_assessment = detector.assess(simulated)
+    for assessment in (no_ml_assessment, ml_assessment, simulation_assessment):
+        service.storage.insert_detection_assessment(assessment)
+    service.storage.insert_analysis(ml_analysis)
+
+    alert = Alert(
+        alert_id="alert-investigation-1", timestamp=without_ml.timestamp,
+        telemetry_id=without_ml.record_id, sensor_id=without_ml.sensor_id,
+        device_id=without_ml.device_id, alert_type="POTENTIAL_ANOMALY", severity="WARNING",
+        anomaly_score=None, retention_score=None, message="Synthetic detection context.",
+        status="RESOLVED", acknowledged_at="2026-01-01T12:00:40Z",
+        resolved_at="2026-01-01T12:00:50Z",
+    )
+    service.storage.insert_alert(alert)
+    monkeypatch.setattr(service.email_notifications, "send_alert", lambda *_args: pytest.fail("investigation sent email"))
+
+    response = client.get(
+        "/api/v1/investigations",
+        params={"device_id": "DEVICE-A", "start": "2026-01-01T11:59:00Z", "end": "2026-01-01T12:03:00Z"},
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert response.status_code == 200
+    events = response.json()["events"]
+    assert [event["timestamp"] for event in events] == sorted(event["timestamp"] for event in events)
+    detection_events = [event for event in events if event["event_type"] == "DETECTION"]
+    assert len(detection_events) == 3
+    by_ref = {event["reference_id"]: event for event in detection_events}
+    assert by_ref[without_ml.record_id]["details"]["ml_score"] is None
+    assert by_ref[without_ml.record_id]["details"]["evidence"]
+    assert by_ref[with_ml.record_id]["details"]["ml_score"] == 0.82
+    deauth_event = by_ref[simulated.record_id]
+    assert "simulated deauthentication" in deauth_event["title"].lower()
+    assert "simulation-only" in deauth_event["reason"].lower()
+    assert any(event["event_type"] == "ML_ANALYSIS" and event["details"]["model_version"] == "test-model" for event in events)
+    assert {event["event_type"] for event in events} >= {
+        "TELEMETRY", "BEHAVIOR_SUMMARY", "DETECTION", "ML_ANALYSIS", "ALERT",
+        "ALERT_ACKNOWLEDGED", "ALERT_RESOLVED",
+    }
+    assert "payload" not in response.text.lower()
+    assert "smtp" not in response.text.lower()
