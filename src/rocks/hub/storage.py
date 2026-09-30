@@ -110,9 +110,196 @@ class HubStorage:
                 CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
                 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
                 CREATE INDEX IF NOT EXISTS idx_alerts_device_timestamp ON alerts(device_id, timestamp);
+                CREATE TABLE IF NOT EXISTS investigations (
+                    investigation_id TEXT PRIMARY KEY,
+                    device_id TEXT,
+                    sensor_id TEXT,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_investigations_status_updated ON investigations(status, updated_at);
+                CREATE TABLE IF NOT EXISTS investigation_events (
+                    event_id TEXT PRIMARY KEY,
+                    investigation_id TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    severity TEXT,
+                    message TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    FOREIGN KEY (investigation_id) REFERENCES investigations(investigation_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_investigation_events_case_timestamp
+                    ON investigation_events(investigation_id, timestamp);
+                CREATE INDEX IF NOT EXISTS idx_investigation_events_case_type_timestamp
+                    ON investigation_events(investigation_id, event_type, timestamp);
                 """
             )
             self._ensure_alert_columns(connection)
+
+    def create_investigation(
+        self,
+        *,
+        title: str,
+        description: str = "",
+        device_id: str | None = None,
+        sensor_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.initialize()
+        investigation_id = str(uuid.uuid4())
+        created_at = _utc_now()
+        event = CaseTimelineEvent(
+            event_id=str(uuid.uuid4()),
+            investigation_id=investigation_id,
+            timestamp=created_at,
+            event_type="INVESTIGATION_CREATED",
+            severity="INFO",
+            message="Investigation opened.",
+            source="system",
+            metadata={},
+        )
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO investigations (investigation_id, device_id, sensor_id, title, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, ?)",
+                (investigation_id, device_id, sensor_id, title, description, created_at, created_at),
+            )
+            self._insert_case_event(connection, event)
+        return self.get_investigation(investigation_id)  # type: ignore[return-value]
+
+    def get_investigation(self, investigation_id: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT investigation_id, device_id, sensor_id, title, description, status, created_at, updated_at FROM investigations WHERE investigation_id = ?",
+                (investigation_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def add_investigation_event(self, investigation_id: str, event: dict[str, Any]) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            investigation = connection.execute(
+                "SELECT status FROM investigations WHERE investigation_id = ?", (investigation_id,)
+            ).fetchone()
+            if investigation is None:
+                return None
+            if investigation["status"] == "CLOSED":
+                raise ValueError("Closed investigations cannot be modified")
+            stored_event = CaseTimelineEvent(
+                event_id=event["event_id"],
+                investigation_id=investigation_id,
+                timestamp=event["timestamp"],
+                event_type=event["event_type"],
+                severity=event["severity"],
+                message=event["message"],
+                source=event["source"],
+                metadata=event["metadata"],
+            )
+            self._insert_case_event(connection, stored_event)
+            connection.execute(
+                "UPDATE investigations SET updated_at = ? WHERE investigation_id = ?",
+                (_utc_now(), investigation_id),
+            )
+        return stored_event.to_dict()
+
+    def investigation_events(self, investigation_id: str) -> list[dict[str, Any]] | None:
+        self.initialize()
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM investigations WHERE investigation_id = ?", (investigation_id,)
+            ).fetchone()
+            if exists is None:
+                return None
+            rows = connection.execute(
+                "SELECT event_id, investigation_id, timestamp, event_type, severity, message, source, metadata_json FROM investigation_events WHERE investigation_id = ? ORDER BY timestamp ASC, rowid ASC",
+                (investigation_id,),
+            ).fetchall()
+        return [
+            {
+                "event_id": row["event_id"],
+                "investigation_id": row["investigation_id"],
+                "timestamp": row["timestamp"],
+                "event_type": row["event_type"],
+                "severity": row["severity"],
+                "message": row["message"],
+                "source": row["source"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        ]
+
+    def update_investigation(self, investigation_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
+        self.initialize()
+        event: CaseTimelineEvent | None = None
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM investigations WHERE investigation_id = ?", (investigation_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            current_status = row["status"]
+            if current_status == "CLOSED":
+                raise ValueError("Closed investigations cannot be modified")
+            assignments: list[str] = []
+            values: list[Any] = []
+            for field in ("title", "description"):
+                if field in changes:
+                    assignments.append(f"{field} = ?")
+                    values.append(changes[field])
+            new_status = changes.get("status", current_status)
+            if new_status not in INVESTIGATION_STATUSES:
+                raise ValueError("Invalid investigation status")
+            if new_status != current_status:
+                if new_status not in INVESTIGATION_TRANSITIONS[current_status]:
+                    raise ValueError(f"Invalid investigation transition: {current_status} -> {new_status}")
+                assignments.append("status = ?")
+                values.append(new_status)
+                now = _utc_now()
+                event = CaseTimelineEvent(
+                    event_id=str(uuid.uuid4()),
+                    investigation_id=investigation_id,
+                    timestamp=now,
+                    event_type="STATUS_CHANGED",
+                    severity="INFO",
+                    message=f"Status changed from {current_status} to {new_status}.",
+                    source="analyst",
+                    metadata={"previous_status": current_status, "status": new_status},
+                )
+            if not assignments:
+                raise ValueError("At least one investigation field must be updated")
+            assignments.append("updated_at = ?")
+            values.extend([_utc_now(), investigation_id])
+            connection.execute(
+                f"UPDATE investigations SET {', '.join(assignments)} WHERE investigation_id = ?",
+                values,
+            )
+            if event:
+                self._insert_case_event(connection, event)
+        return self.get_investigation(investigation_id)
+
+    def close_investigation(self, investigation_id: str) -> dict[str, Any] | None:
+        return self.update_investigation(investigation_id, {"status": "CLOSED"})
+
+    @staticmethod
+    def _insert_case_event(connection: sqlite3.Connection, event: CaseTimelineEvent) -> None:
+        connection.execute(
+            "INSERT INTO investigation_events (event_id, investigation_id, timestamp, event_type, severity, message, source, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event.event_id,
+                event.investigation_id,
+                event.timestamp,
+                event.event_type,
+                event.severity,
+                event.message,
+                event.source,
+                json.dumps(event.metadata, sort_keys=True, separators=(",", ":")),
+            ),
+        )
 
     def investigation_timeline(
         self,
@@ -239,6 +426,45 @@ class HubStorage:
                 ).to_dict()
             )
         return result
+
+    def investigations_for_device(self, device_id: str, *, sensor_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        self.initialize()
+        values: list[Any] = [device_id]
+        sensor_clause = ""
+        if sensor_id is not None:
+            sensor_clause = " AND sensor_id = ?"
+            values.append(sensor_id)
+        values.append(min(max(int(limit), 1), 100))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT investigation_id, device_id, sensor_id, title, description, status, created_at, updated_at FROM investigations WHERE device_id = ?" + sensor_clause + " ORDER BY updated_at DESC, investigation_id LIMIT ?",
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def investigation_alerts_for_device(self, device_id: str, *, sensor_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        self.initialize()
+        values: list[Any] = [device_id]
+        sensor_clause = ""
+        if sensor_id is not None:
+            sensor_clause = " AND sensor_id = ?"
+            values.append(sensor_id)
+        values.append(min(max(int(limit), 1), 100))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp, severity, message, status, acknowledged_at, resolved_at FROM alerts WHERE device_id = ?" + sensor_clause + " ORDER BY timestamp DESC, alert_id LIMIT ?",
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def investigation_device_exists(self, device_id: str) -> bool:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM telemetry WHERE device_id = ? UNION SELECT 1 FROM alerts WHERE device_id = ? UNION SELECT 1 FROM investigations WHERE device_id = ? LIMIT 1",
+                (device_id, device_id, device_id),
+            ).fetchone()
+        return row is not None
 
     def _ensure_alert_columns(self, connection: sqlite3.Connection) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(alerts)").fetchall()}
