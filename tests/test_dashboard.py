@@ -45,8 +45,6 @@ def test_login_protection_and_logout(tmp_path, monkeypatch):
     assert client.get("/api/v1/dashboard/summary").status_code == 401
 
 
-
-
 def test_malformed_signed_session_claims_are_rejected():
     secret = "test-session-secret"
     encoded = _encode({"username": "admin", "expires": {"unexpected": "type"}})
@@ -65,13 +63,14 @@ def test_session_tokens_are_unique_and_reject_fixation_style_replay():
     assert verify_session(second, secret) == "admin"
     assert verify_session("admin.invalid", secret) is None
 
+
 def test_empty_dashboard_summary_and_ml_not_ready(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
     summary = client.get("/api/v1/dashboard/summary")
     assert summary.status_code == 200
     data = summary.json()
-    assert data["edges"] == {"total": 0, "online": 0, "offline": 0}
+    assert data["edges"] == {"total": 0, "online": 0, "stale": 0, "unknown": 0, "offline": 0}
     assert data["telemetry"]["total"] == 0
     assert data["ml"]["status"] == "NOT_READY"
     assert data["anomalies"]["recent"] == 0
@@ -79,91 +78,6 @@ def test_empty_dashboard_summary_and_ml_not_ready(tmp_path, monkeypatch):
     assert client.get("/dashboard/telemetry").status_code == 200
     assert client.get("/dashboard/events").status_code == 200
 
-
-
-
-def test_dashboard_alert_reads_tolerate_corrupt_assessment_and_redact_internal_error(tmp_path, monkeypatch):
-    client = make_client(tmp_path, monkeypatch)
-    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
-    service = client.app.state.hub_service
-    record = behavior_summary_telemetry(
-        TrafficFeatures(0, 60, 1, 1000, 500, 500, 1, 1, 1, 1, 1, 1, 0, 0, 0, 250, 0.02),
-        "EDGE-CORRUPT",
-        device_id="DEVICE-CORRUPT",
-        timestamp=datetime.now(timezone.utc),
-    )
-    service.storage.insert_telemetry(record)
-    alert = AlertEngine().create_alert(None, assessment=DetectionEngine().assess(record), record=record)
-    assert alert is not None
-    service.storage.insert_alert(alert)
-    with service.storage._connect() as connection:
-        connection.execute(
-            "UPDATE alerts SET assessment_json = ?, notification_error = ? WHERE alert_id = ?",
-            ("{invalid-json", "SMTP_PASSWORD=do-not-expose", alert.alert_id),
-        )
-
-    api = client.get("/api/v1/dashboard/alerts")
-    page = client.get("/dashboard/alerts")
-    assert api.status_code == 200
-    assert page.status_code == 200
-    assert "do-not-expose" not in api.text + page.text
-    assert "SMTP_PASSWORD" not in api.text + page.text
-    assert "password" not in api.text.lower() + page.text.lower()
-
-
-def test_corrupt_stored_telemetry_is_skipped_safely(tmp_path, monkeypatch):
-    client = make_client(tmp_path, monkeypatch)
-    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
-    service = client.app.state.hub_service
-    _edge, api_key = service.registry.register("EDGE-CORRUPT-TELEMETRY")
-    record = behavior_summary_telemetry(
-        TrafficFeatures(0, 60, 1, 100, 50, 50, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1.6, 0.01),
-        "EDGE-CORRUPT-TELEMETRY",
-        device_id="DEVICE-CORRUPT-TELEMETRY",
-        timestamp=datetime.now(timezone.utc),
-    )
-    service.storage.insert_telemetry(record)
-    with service.storage._connect() as connection:
-        connection.execute("UPDATE telemetry SET payload_json = ? WHERE id = ?", ("{broken-json", record.record_id))
-
-    dashboard_list = client.get("/api/v1/dashboard/telemetry")
-    dashboard_page = client.get("/dashboard/telemetry")
-    hub_item = client.get(
-        f"/api/v1/telemetry/{record.record_id}",
-        headers={"Authorization": f"Bearer {api_key}"},
-    )
-    assert dashboard_list.status_code == 200
-    assert dashboard_list.json() == []
-    assert dashboard_page.status_code == 200
-    assert "Traceback" not in dashboard_page.text
-    assert hub_item.status_code == 404
-
-
-def test_database_error_response_and_logs_are_sanitized(tmp_path, monkeypatch):
-    import io
-    import logging
-    import sqlite3
-
-    client = make_client(tmp_path, monkeypatch)
-    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
-    service = client.app.state.hub_service
-    captured = io.StringIO()
-    handler = logging.StreamHandler(captured)
-    service._logger.addHandler(handler)
-    monkeypatch.setattr(
-        service.storage,
-        "dashboard_edges",
-        lambda **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("password=do-not-log")),
-    )
-    try:
-        response = client.get("/api/v1/dashboard/edges")
-    finally:
-        service._logger.removeHandler(handler)
-    assert response.status_code == 503
-    assert response.json() == {"detail": "Storage is temporarily unavailable"}
-    assert "do-not-log" not in response.text
-    assert "do-not-log" not in captured.getvalue()
-    assert "OperationalError" in captured.getvalue()
 
 def test_dashboard_data_filters_limits_and_secrets(tmp_path, monkeypatch):
     app = create_app(str(tmp_path / "dashboard.db"))
@@ -521,3 +435,179 @@ def test_dashboard_analyst_notes_actions_auth_timeline_and_closed_case(tmp_path,
     assert '<form id="analyst-note-form"' not in closed_page.text
     assert client.post(note_url, json={"note_text": "Closed write rejected."}).status_code == 409
     assert len(storage.investigation_notes(case_id)) == 1
+
+
+def test_fleet_summary_edge_freshness_alerts_and_investigation_entry(tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    from rocks.alerts.engine import Alert
+    from rocks.edge.telemetry import TelemetryRecord, utc_timestamp
+
+    client = make_client(tmp_path, monkeypatch)
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    service = client.app.state.hub_service
+    storage = service.storage
+    timestamp = utc_timestamp(datetime.now(timezone.utc))
+    event_timestamp = utc_timestamp(datetime.now(timezone.utc) - timedelta(days=1))
+    for sensor_id in ("EDGE-ONLINE", "EDGE-STALE", "EDGE-UNKNOWN"):
+        service.registry.register(sensor_id)
+    storage.touch_edge("EDGE-ONLINE")
+    old_seen = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    with storage._connect() as connection:
+        connection.execute("UPDATE edges SET last_seen = ? WHERE sensor_id = ?", (old_seen, "EDGE-STALE"))
+    storage.insert_telemetry(TelemetryRecord("EDGE-ONLINE", "DEVICE-OVERVIEW", "CONNECTION", {"source": {"ip": "192.0.2.7"}}, timestamp=event_timestamp))
+
+    alert = Alert(
+        alert_id="overview-alert-1", timestamp=timestamp, telemetry_id="overview-telemetry-1",
+        sensor_id="EDGE-ONLINE", device_id="DEVICE-OVERVIEW", alert_type="POTENTIAL_ANOMALY",
+        severity="CRITICAL", anomaly_score=None, retention_score=None,
+        message="High-priority behavior requires review.",
+    )
+    storage.insert_alert(alert)
+    with storage._connect() as connection:
+        connection.execute("UPDATE alerts SET notification_error = ? WHERE alert_id = ?", ("SMTP_PASSWORD=private-test-value", alert.alert_id))
+    case = storage.create_investigation(title="Overview case", device_id="DEVICE-OVERVIEW", sensor_id="EDGE-ONLINE")
+
+    summary_response = client.get("/api/v1/dashboard/summary")
+    assert summary_response.status_code == 200
+    data = summary_response.json()
+    assert data["edges"] == {"total": 3, "online": 1, "stale": 1, "unknown": 1, "offline": 2}
+    assert data["telemetry"]["recent"] == 1
+    assert data["alerts"]["open"] == 1
+    assert data["alerts"]["high_critical"] == 1
+    assert data["alerts"]["recent"] == 1
+    assert data["investigations"]["open"] == 1
+    assert data["alerts"]["recent_items"][0]["rule_name"] is None
+    assert "notification_error" not in summary_response.text
+    assert "SMTP_PASSWORD" not in summary_response.text
+    assert "private-test-value" not in summary_response.text
+
+    edges = client.get("/api/v1/dashboard/edges").json()
+    by_sensor = {item["sensor_id"]: item for item in edges}
+    assert by_sensor["EDGE-ONLINE"]["status"] == "ONLINE"
+    assert by_sensor["EDGE-ONLINE"]["last_telemetry_timestamp"] == event_timestamp
+    assert by_sensor["EDGE-ONLINE"]["telemetry_count"] == 1
+    assert by_sensor["EDGE-STALE"]["status"] == "STALE"
+    assert by_sensor["EDGE-UNKNOWN"]["status"] == "UNKNOWN"
+
+    page = client.get("/dashboard")
+    assert page.status_code == 200
+    assert "Investigate Device" in page.text
+    assert f"/dashboard/investigation/DEVICE-OVERVIEW" in page.text
+    assert alert.timestamp in page.text
+    assert case["investigation_id"] not in page.text
+    assert "private-test-value" not in page.text
+
+
+def test_dashboard_health_summary_empty_states_and_page_auth(tmp_path, monkeypatch):
+    from rocks.health import HealthCheck, HealthStatus
+
+    client = make_client(tmp_path, monkeypatch)
+    assert client.get("/dashboard", follow_redirects=False).status_code == 303
+    assert client.get("/api/v1/dashboard/summary").status_code == 401
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+
+    report = SimpleNamespace(
+        overall=HealthStatus.DEGRADED,
+        checks=(
+            HealthCheck("hub_database", HealthStatus.OK, "Hub SQLite database is readable."),
+            HealthCheck("telemetry", HealthStatus.WARNING, "Telemetry is stale."),
+            HealthCheck("hub_service", HealthStatus.UNKNOWN, "Service state is unavailable."),
+        ),
+    )
+    monkeypatch.setattr("rocks.dashboard.service.HealthChecker", lambda: SimpleNamespace(run=lambda: report))
+    page = client.get("/dashboard")
+    assert page.status_code == 200
+    assert "DEGRADED" in page.text
+    assert "Hub Database" in page.text
+    assert "Telemetry is stale." in page.text
+    assert "Service state is unavailable." in page.text
+    assert "No Edge sensors registered." in page.text
+    assert "No alerts were created in the last 24 hours." in page.text
+    assert "No telemetry available." in page.text
+    assert "password_hash" not in page.text
+    assert "session_secret" not in page.text
+
+
+def test_dashboard_alert_reads_tolerate_corrupt_assessment_and_redact_internal_error(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    service = client.app.state.hub_service
+    record = behavior_summary_telemetry(
+        TrafficFeatures(0, 60, 1, 1000, 500, 500, 1, 1, 1, 1, 1, 1, 0, 0, 0, 250, 0.02),
+        "EDGE-CORRUPT",
+        device_id="DEVICE-CORRUPT",
+        timestamp=datetime.now(timezone.utc),
+    )
+    service.storage.insert_telemetry(record)
+    alert = AlertEngine().create_alert(None, assessment=DetectionEngine().assess(record), record=record)
+    assert alert is not None
+    service.storage.insert_alert(alert)
+    with service.storage._connect() as connection:
+        connection.execute(
+            "UPDATE alerts SET assessment_json = ?, notification_error = ? WHERE alert_id = ?",
+            ("{invalid-json", "SMTP_PASSWORD=do-not-expose", alert.alert_id),
+        )
+
+    api = client.get("/api/v1/dashboard/alerts")
+    page = client.get("/dashboard/alerts")
+    assert api.status_code == 200
+    assert page.status_code == 200
+    assert "do-not-expose" not in api.text + page.text
+    assert "SMTP_PASSWORD" not in api.text + page.text
+    assert "password" not in api.text.lower() + page.text.lower()
+
+
+def test_corrupt_stored_telemetry_is_skipped_safely(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    service = client.app.state.hub_service
+    _edge, api_key = service.registry.register("EDGE-CORRUPT-TELEMETRY")
+    record = behavior_summary_telemetry(
+        TrafficFeatures(0, 60, 1, 100, 50, 50, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1.6, 0.01),
+        "EDGE-CORRUPT-TELEMETRY",
+        device_id="DEVICE-CORRUPT-TELEMETRY",
+        timestamp=datetime.now(timezone.utc),
+    )
+    service.storage.insert_telemetry(record)
+    with service.storage._connect() as connection:
+        connection.execute("UPDATE telemetry SET payload_json = ? WHERE id = ?", ("{broken-json", record.record_id))
+
+    dashboard_list = client.get("/api/v1/dashboard/telemetry")
+    dashboard_page = client.get("/dashboard/telemetry")
+    hub_item = client.get(
+        f"/api/v1/telemetry/{record.record_id}",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert dashboard_list.status_code == 200
+    assert dashboard_list.json() == []
+    assert dashboard_page.status_code == 200
+    assert "Traceback" not in dashboard_page.text
+    assert hub_item.status_code == 404
+
+
+def test_database_error_response_and_logs_are_sanitized(tmp_path, monkeypatch):
+    import io
+    import logging
+    import sqlite3
+
+    client = make_client(tmp_path, monkeypatch)
+    client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
+    service = client.app.state.hub_service
+    captured = io.StringIO()
+    handler = logging.StreamHandler(captured)
+    service._logger.addHandler(handler)
+    monkeypatch.setattr(
+        service.storage,
+        "dashboard_edges",
+        lambda **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("password=do-not-log")),
+    )
+    try:
+        response = client.get("/api/v1/dashboard/edges")
+    finally:
+        service._logger.removeHandler(handler)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Storage is temporarily unavailable"}
+    assert "do-not-log" not in response.text
+    assert "do-not-log" not in captured.getvalue()
+    assert "OperationalError" in captured.getvalue()

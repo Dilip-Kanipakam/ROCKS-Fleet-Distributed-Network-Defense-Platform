@@ -233,6 +233,79 @@ class HubStorage:
             for row in rows
         ]
 
+    def add_investigation_note(self, investigation_id: str, note: dict[str, Any]) -> dict[str, Any] | None:
+        event = self.add_investigation_event(investigation_id, note)
+        if event is None:
+            return None
+        return self._analyst_note(event)
+
+    def investigation_notes(self, investigation_id: str) -> list[dict[str, Any]] | None:
+        events = self._investigation_records(investigation_id, "ANALYST_NOTE")
+        if events is None:
+            return None
+        return [self._analyst_note(event) for event in events]
+
+    def add_investigation_action(self, investigation_id: str, action: dict[str, Any]) -> dict[str, Any] | None:
+        event = self.add_investigation_event(investigation_id, action)
+        if event is None:
+            return None
+        return self._analyst_action(event)
+
+    def investigation_actions(self, investigation_id: str) -> list[dict[str, Any]] | None:
+        events = self._investigation_records(investigation_id, "ANALYST_ACTION")
+        if events is None:
+            return None
+        return [self._analyst_action(event) for event in events]
+
+    def _investigation_records(self, investigation_id: str, event_type: str, *, limit: int = MAX_EVENTS) -> list[dict[str, Any]] | None:
+        self.initialize()
+        bounded_limit = min(max(int(limit), 1), MAX_EVENTS)
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM investigations WHERE investigation_id = ?", (investigation_id,)
+            ).fetchone()
+            if exists is None:
+                return None
+            rows = connection.execute(
+                "SELECT event_id, investigation_id, timestamp, event_type, severity, message, source, metadata_json FROM investigation_events WHERE investigation_id = ? AND event_type = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?",
+                (investigation_id, event_type, bounded_limit),
+            ).fetchall()
+        return [
+            {
+                "event_id": row["event_id"],
+                "investigation_id": row["investigation_id"],
+                "timestamp": row["timestamp"],
+                "event_type": row["event_type"],
+                "severity": row["severity"],
+                "message": row["message"],
+                "source": row["source"],
+                "metadata": _safe_json_object(row["metadata_json"]) or {},
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _analyst_note(event: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "note_id": event["event_id"],
+            "investigation_id": event["investigation_id"],
+            "timestamp": event["timestamp"],
+            "author": event["source"],
+            "note_text": event["message"],
+            "category": event["metadata"].get("category"),
+        }
+
+    @staticmethod
+    def _analyst_action(event: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "action_id": event["event_id"],
+            "investigation_id": event["investigation_id"],
+            "timestamp": event["timestamp"],
+            "author": event["source"],
+            "category": event["metadata"].get("category"),
+            "message": event["message"],
+        }
+
     def update_investigation(self, investigation_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
         self.initialize()
         event: CaseTimelineEvent | None = None
@@ -729,18 +802,23 @@ class HubStorage:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def dashboard_edges(self) -> list[dict[str, Any]]:
+    def dashboard_edges(self, *, limit: int = 500) -> list[dict[str, Any]]:
         self.initialize()
+        bounded_limit = min(max(int(limit), 1), 500)
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT e.sensor_id, e.name, e.status, e.created_at, e.last_seen,
-                       COUNT(t.id) AS telemetry_count
+                       COUNT(t.id) AS telemetry_count,
+                       MAX(t.timestamp) AS last_telemetry_timestamp
                 FROM edges AS e
                 LEFT JOIN telemetry AS t ON t.sensor_id = e.sensor_id
                 GROUP BY e.sensor_id, e.name, e.status, e.created_at, e.last_seen
                 ORDER BY e.sensor_id
+                LIMIT ?
                 """
+                ,
+                (bounded_limit,),
             ).fetchall()
         return [
             {
@@ -749,6 +827,86 @@ class HubStorage:
             }
             for row in rows
         ]
+
+    def dashboard_edge_counts(self) -> dict[str, int]:
+        self.initialize()
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(seconds=self.edge_liveness_timeout_seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        now_text = now.isoformat(timespec="seconds").replace("+00:00", "Z")
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN last_seen IS NULL THEN 1 ELSE 0 END) AS unknown,
+                       SUM(CASE WHEN julianday(last_seen) BETWEEN julianday(?) AND julianday(?) THEN 1 ELSE 0 END) AS online
+                FROM edges
+                """,
+                (cutoff, now_text),
+            ).fetchone()
+        total = int(row["total"] or 0)
+        unknown = int(row["unknown"] or 0)
+        online = int(row["online"] or 0)
+        return {"total": total, "online": online, "stale": max(0, total - unknown - online), "unknown": unknown}
+
+    def dashboard_fleet_counts(self, *, recent_seconds: int = 86400) -> dict[str, int]:
+        self.initialize()
+        recent_cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=max(1, int(recent_seconds)))
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        recent_telemetry_cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=300)
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM telemetry) AS telemetry_total,
+                    (SELECT COUNT(*) FROM telemetry WHERE received_at >= ?) AS telemetry_recent,
+                    (SELECT COUNT(*) FROM alerts WHERE status IN ('OPEN', 'ACKNOWLEDGED')) AS open_alerts,
+                    (SELECT COUNT(*) FROM alerts WHERE status IN ('OPEN', 'ACKNOWLEDGED') AND severity IN ('HIGH', 'CRITICAL')) AS high_critical_alerts,
+                    (SELECT COUNT(*) FROM alerts WHERE created_at >= ?) AS alerts_recent,
+                    (SELECT COUNT(*) FROM investigations WHERE status IN ('OPEN', 'IN_PROGRESS')) AS open_investigations
+                """,
+                (recent_telemetry_cutoff, recent_cutoff),
+            ).fetchone()
+        return {key: int(row[key]) for key in row.keys()}
+
+    def dashboard_recent_alerts(self, *, limit: int = 5, within_seconds: int = 86400) -> list[dict[str, Any]]:
+        self.initialize()
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=max(1, int(within_seconds)))
+        ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT alert_id, telemetry_id, sensor_id, device_id, timestamp,
+                       alert_type, severity, message, status, assessment_json
+                FROM alerts
+                WHERE created_at >= ?
+                ORDER BY created_at DESC, alert_id
+                LIMIT ?
+                """,
+                (cutoff, min(max(int(limit), 1), 20)),
+            ).fetchall()
+        alerts = []
+        for row in rows:
+            assessment = _safe_json_object(row["assessment_json"])
+            rules = assessment.get("rules_triggered", []) if isinstance(assessment, dict) else []
+            alerts.append(
+                {
+                    "alert_id": row["alert_id"],
+                    "telemetry_id": row["telemetry_id"],
+                    "sensor_id": row["sensor_id"],
+                    "device_id": row["device_id"],
+                    "timestamp": row["timestamp"],
+                    "alert_type": row["alert_type"],
+                    "severity": row["severity"],
+                    "message": row["message"],
+                    "status": row["status"],
+                    "rule_name": rules[0].get("title") if rules and isinstance(rules[0], dict) else None,
+                }
+            )
+        return alerts
 
     def dashboard_telemetry(
         self,
@@ -1048,78 +1206,6 @@ class HubStorage:
             warning = connection.execute("SELECT COUNT(*) FROM alerts WHERE severity = 'WARNING'").fetchone()[0]
             open_count = connection.execute("SELECT COUNT(*) FROM alerts WHERE status = 'OPEN'").fetchone()[0]
         return {"total_recent": int(total), "high": int(high), "warning": int(warning), "open": int(open_count)}
-
-    def add_investigation_note(self, investigation_id: str, note: dict[str, Any]) -> dict[str, Any] | None:
-        event = self.add_investigation_event(investigation_id, note)
-        if event is None:
-            return None
-        return self._analyst_note(event)
-
-    def investigation_notes(self, investigation_id: str) -> list[dict[str, Any]] | None:
-        events = self._investigation_records(investigation_id, "ANALYST_NOTE")
-        if events is None:
-            return None
-        return [self._analyst_note(event) for event in events]
-
-    def add_investigation_action(self, investigation_id: str, action: dict[str, Any]) -> dict[str, Any] | None:
-        event = self.add_investigation_event(investigation_id, action)
-        if event is None:
-            return None
-        return self._analyst_action(event)
-
-    def investigation_actions(self, investigation_id: str) -> list[dict[str, Any]] | None:
-        events = self._investigation_records(investigation_id, "ANALYST_ACTION")
-        if events is None:
-            return None
-        return [self._analyst_action(event) for event in events]
-
-    def _investigation_records(self, investigation_id: str, event_type: str) -> list[dict[str, Any]] | None:
-        self.initialize()
-        with self._connect() as connection:
-            exists = connection.execute(
-                "SELECT 1 FROM investigations WHERE investigation_id = ?", (investigation_id,)
-            ).fetchone()
-            if exists is None:
-                return None
-            rows = connection.execute(
-                "SELECT event_id, investigation_id, timestamp, event_type, severity, message, source, metadata_json FROM investigation_events WHERE investigation_id = ? AND event_type = ? ORDER BY timestamp DESC, rowid DESC",
-                (investigation_id, event_type),
-            ).fetchall()
-        return [
-            {
-                "event_id": row["event_id"],
-                "investigation_id": row["investigation_id"],
-                "timestamp": row["timestamp"],
-                "event_type": row["event_type"],
-                "severity": row["severity"],
-                "message": row["message"],
-                "source": row["source"],
-                "metadata": json.loads(row["metadata_json"]),
-            }
-            for row in rows
-        ]
-
-    @staticmethod
-    def _analyst_note(event: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "note_id": event["event_id"],
-            "investigation_id": event["investigation_id"],
-            "timestamp": event["timestamp"],
-            "author": event["source"],
-            "note_text": event["message"],
-            "category": event["metadata"].get("category"),
-        }
-
-    @staticmethod
-    def _analyst_action(event: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "action_id": event["event_id"],
-            "investigation_id": event["investigation_id"],
-            "timestamp": event["timestamp"],
-            "author": event["source"],
-            "category": event["metadata"]["category"],
-            "message": event["message"],
-        }
 
     def _connect(self) -> sqlite3.Connection:
         connection = connect_sqlite(self.database_path)

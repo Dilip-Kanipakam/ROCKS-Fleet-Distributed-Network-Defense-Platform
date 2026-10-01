@@ -33,3 +33,13 @@ Investigation provides correlated evidence and context. It does not prove that a
 For host-level operations, use `rocks health` or `rocks health verbose` for service state, Hub/dashboard reachability, read-only SQLite checks, Edge buffer availability, and telemetry freshness. Service status is not equivalent to telemetry flow. Troubleshoot systemd failures with `rocks service status` and `journalctl -u rocks-hub.service`; stale telemetry may require checking Edge delivery and the authorized SPAN/TAP observation path. These diagnostics do not change services or network configuration, and a healthy ROCKS installation does not assert that the monitored network is healthy.
 
 Authenticated note and action APIs are available under `/api/v1/dashboard/investigations/{investigation_id}/notes` and `/api/v1/dashboard/investigations/{investigation_id}/actions`; the corresponding Hub API uses `/api/v1/investigations/{investigation_id}/notes` and `/actions` with the existing bearer-key authentication.
+
+## Fleet Overview
+
+The main Command Center summarizes registered, online, stale, and unknown Edge sensors; telemetry received in the last five minutes; open and high/critical active alerts; open investigations; and ML baseline state. Counts come from Hub SQLite records. Recent alert entries show stored severity, rule name when available, device, timestamp, and status. An alert with a device identifier links to the existing device investigation view using that alert's timestamp and sensor.
+
+Edge `ONLINE` means the Hub has seen the sensor within the configured Edge liveness timeout. `STALE` means it has been seen but is now outside that timeout. `UNKNOWN` means it has never checked in. The table separately shows the last Hub telemetry timestamp and stored telemetry count; registration alone does not imply online status.
+
+The system health section uses the existing read-only `rocks health` checks and displays their aggregate and component states without diagnostic detail fields or configuration values. It is evaluated when the dashboard page loads; dashboard data refreshes every 30 seconds using authenticated read-only endpoints. Empty sensor, alert, and telemetry collections are reported explicitly; unavailable fleet data uses a generic error message.
+
+The Command Center is an operational summary, not a network enforcement console. Hub health and Edge freshness describe software connectivity and stored observations; they do not establish network health, attack confirmation, or prevention effectiveness. An unavailable per-Edge Hub connection signal is not inferred from registration.

@@ -91,6 +91,11 @@ def test_demo_rejects_unknown_scenario():
     assert exit_code == 2
 
 
+def test_demo_rejects_excessive_count():
+    with pytest.raises(ValueError, match="count must be between 1 and"):
+        run_demo_sequence(mode=DemoMode.NORMAL, count=1001, sensor_id="ROCKS-DEMO-TEST")
+
+
 def test_demo_cli_output_is_secret_safe_and_reports_synthetic_pipeline(capsys):
     exit_code = main(["demo", "--mode", "normal", "--scenario", "normal", "--count", "2", "--sensor-id", "ROCKS-DEMO-CLI"])
     assert exit_code == 0

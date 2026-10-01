@@ -5,6 +5,7 @@ from typing import Any
 from rocks.hub.storage import HubStorage
 from rocks.ml.config import get_ml_config
 from rocks.alerts.config import get_email_config
+from rocks.health import HealthChecker, HealthStatus
 
 
 class DashboardService:
@@ -15,7 +16,8 @@ class DashboardService:
         self.ml_service = ml_service
 
     def summary(self) -> dict[str, Any]:
-        edges = self.storage.dashboard_edges()
+        edge_counts = self.storage.dashboard_edge_counts()
+        fleet_counts = self.storage.dashboard_fleet_counts()
         ml_config = get_ml_config()
         model_status = {"status": "NOT_READY", "model_version": ml_config.model_version, "training_samples": 0, "last_trained": None}
         model = getattr(self.ml_service, "model", None)
@@ -24,12 +26,12 @@ class DashboardService:
         analysis = self.storage.recent_analysis(100)
         return {
             "hub_status": "ONLINE",
-            "edges": {
-                "total": len(edges),
-                "online": sum(edge["status"] == "ONLINE" for edge in edges),
-                "offline": sum(edge["status"] == "OFFLINE" for edge in edges),
+            "edges": {**edge_counts, "offline": edge_counts["stale"] + edge_counts["unknown"]},
+            "telemetry": {
+                "total": fleet_counts["telemetry_total"],
+                "recent": fleet_counts["telemetry_recent"],
+                "recent_window_seconds": 300,
             },
-            "telemetry": {"total": self.storage.count(), "recent": self.storage.recent_count()},
             "ml": {
                 "status": model_status.get("status", "NOT_READY"),
                 "training_samples": model_status.get("training_samples", 0),
@@ -41,12 +43,53 @@ class DashboardService:
                 "recent": sum((item["anomaly_score"] or 0) >= 0.4 for item in analysis),
                 "high_retention": sum(item["retention_priority"] == "HIGH" for item in analysis),
             },
-            "storage": {"connected": True, "telemetry_records": self.storage.count(), "analysis_records": self.storage.analysis_count()},
-            "alerts": self.storage.alert_counts(),
+            "storage": {"connected": True, "telemetry_records": fleet_counts["telemetry_total"], "analysis_records": self.storage.analysis_count()},
+            "alerts": {
+                "open": fleet_counts["open_alerts"],
+                "high_critical": fleet_counts["high_critical_alerts"],
+                "recent": fleet_counts["alerts_recent"],
+                "recent_items": self.storage.dashboard_recent_alerts(limit=5),
+            },
+            "investigations": {"open": fleet_counts["open_investigations"]},
         }
 
     def edges(self) -> list[dict[str, Any]]:
-        return self.storage.dashboard_edges()
+        edges = self.storage.dashboard_edges()
+        for edge in edges:
+            if not edge.get("last_seen"):
+                edge["status"] = "UNKNOWN"
+            elif edge["status"] != "ONLINE":
+                edge["status"] = "STALE"
+        return edges
+
+    def health(self) -> dict[str, Any]:
+        try:
+            report = HealthChecker().run()
+        except Exception:
+            return {
+                "overall": "UNHEALTHY",
+                "checks": [{"name": "diagnostics", "status": "DEGRADED", "message": "Health diagnostics are temporarily unavailable."}],
+            }
+        status_map = {
+            HealthStatus.OK: "HEALTHY",
+            HealthStatus.WARNING: "DEGRADED",
+            HealthStatus.UNKNOWN: "DEGRADED",
+            HealthStatus.ERROR: "UNHEALTHY",
+            HealthStatus.NOT_APPLICABLE: "NOT_APPLICABLE",
+        }
+        visible_checks = {"configuration", "hub_api", "hub_database", "telemetry", "alerts", "edge_service", "hub_service", "dashboard"}
+        return {
+            "overall": report.overall.value,
+            "checks": [
+                {
+                    "name": check.name,
+                    "status": status_map.get(check.status, "DEGRADED"),
+                    "message": check.message,
+                }
+                for check in report.checks
+                if check.name in visible_checks
+            ],
+        }
 
     def telemetry(self, limit: int = 50, event_type: str | None = None, sensor_id: str | None = None) -> list[dict[str, Any]]:
         return self.storage.dashboard_telemetry(limit=limit, event_type=event_type, sensor_id=sensor_id)
@@ -65,6 +108,7 @@ class DashboardService:
         alerts = self.storage.recent_alerts(limit)
         email_enabled = get_email_config().enabled
         for alert in alerts:
+            alert.pop("notification_error", None)
             status = alert.get("notification_status", "NOT_SENT")
             if status == "SENT":
                 label = "Sent"

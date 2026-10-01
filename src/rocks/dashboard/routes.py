@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 from datetime import timedelta
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Path as APIPath, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -93,7 +93,17 @@ class DashboardRoutes:
         redirect = self._page_auth(request)
         if redirect:
             return redirect
-        return self.templates.TemplateResponse(request=request, name="dashboard.html", context={"summary": self.service.summary()})
+        try:
+            summary = self.service.summary()
+            data_error = None
+        except Exception:
+            summary = None
+            data_error = "Hub fleet data is temporarily unavailable."
+        return self.templates.TemplateResponse(
+            request=request,
+            name="dashboard.html",
+            context={"summary": summary, "health": self.service.health(), "data_error": data_error},
+        )
 
     def edges_page(self, request: Request):
         redirect = self._page_auth(request)
@@ -107,7 +117,7 @@ class DashboardRoutes:
             return redirect
         return self.templates.TemplateResponse(request=request, name="telemetry.html", context={"telemetry": self.service.telemetry()})
 
-    def telemetry_context_page(self, request: Request, telemetry_id: str):
+    def telemetry_context_page(self, request: Request, telemetry_id: str = APIPath(..., min_length=1, max_length=128)):
         redirect = self._page_auth(request)
         if redirect:
             return redirect
@@ -197,17 +207,31 @@ class DashboardRoutes:
 
     def summary_api(self, request: Request):
         self._api_auth(request)
-        return JSONResponse(self.service.summary())
+        try:
+            return JSONResponse(self.service.summary())
+        except Exception:
+            raise HTTPException(status_code=503, detail="Hub fleet data is temporarily unavailable")
 
     def edges_api(self, request: Request):
         self._api_auth(request)
         return JSONResponse(self.service.edges())
 
-    def telemetry_api(self, request: Request, limit: int = Query(50, ge=1, le=100), event_type: str | None = None, sensor_id: str | None = None):
+    def telemetry_api(
+        self,
+        request: Request,
+        limit: int = Query(50, ge=1, le=100),
+        event_type: str | None = Query(default=None, min_length=1, max_length=32),
+        sensor_id: str | None = Query(default=None, min_length=1, max_length=64),
+    ):
         self._api_auth(request)
         return JSONResponse(self.service.telemetry(limit, event_type, sensor_id))
 
-    def telemetry_context_api(self, request: Request, telemetry_id: str, limit: int = Query(50, ge=1, le=100)):
+    def telemetry_context_api(
+        self,
+        request: Request,
+        telemetry_id: str = APIPath(..., min_length=1, max_length=128),
+        limit: int = Query(50, ge=1, le=100),
+    ):
         self._api_auth(request)
         context = self.service.telemetry_context(telemetry_id, limit)
         if context["trigger"] is None:
@@ -226,7 +250,7 @@ class DashboardRoutes:
         self._api_auth(request)
         return JSONResponse(self.service.alerts(limit))
 
-    def acknowledge_alert(self, request: Request, alert_id: str):
+    def acknowledge_alert(self, request: Request, alert_id: str = APIPath(..., min_length=1, max_length=128)):
         self._api_auth(request)
         alert = self.service.storage.get_alert(alert_id)
         if alert is None:
@@ -237,7 +261,7 @@ class DashboardRoutes:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return JSONResponse({"alert_id": updated.alert_id, "status": updated.status, "message": "Alert acknowledged."})
 
-    def resolve_alert(self, request: Request, alert_id: str):
+    def resolve_alert(self, request: Request, alert_id: str = APIPath(..., min_length=1, max_length=128)):
         self._api_auth(request)
         alert = self.service.storage.get_alert(alert_id)
         if alert is None:

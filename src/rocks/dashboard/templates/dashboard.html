@@ -1,3 +1,62 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ROCKS Command Center</title><link rel="stylesheet" href="/dashboard/static/dashboard.css"></head>
-<body><header class="topbar"><div><p class="eyebrow">ROCKS FLEET</p><h1>COMMAND CENTER</h1><p class="subtitle">Network Security Monitoring &amp; Anomaly Detection</p></div><form method="post" action="/dashboard/logout"><button class="ghost" type="submit">Log out</button></form></header><main class="shell"><section id="summary" class="cards">{% set s = summary %}<article class="card"><span>Hub Status</span><strong class="online">{{ s.hub_status }}</strong></article><article class="card"><span>Edge Sensors</span><strong>{{ s.edges.online }}/{{ s.edges.total }}</strong><small>online / total</small></article><article class="card"><span>Telemetry</span><strong>{{ s.telemetry.total }}</strong><small>{{ s.telemetry.recent }} recent</small></article><article class="card"><span>ML Baseline</span><strong>{{ s.ml.status }}</strong><small>{{ s.ml.training_samples }} samples</small></article><article class="card"><span>Potential Anomalies</span><strong>{{ s.anomalies.recent }}</strong><small>needs investigation</small></article><article class="card"><span>High Retention</span><strong>{{ s.anomalies.high_retention }}</strong><small>storage priority</small></article></section><section class="panel"><div class="section-heading"><div><p class="eyebrow">OBSERVE</p><h2>Traffic overview</h2></div><span class="muted">Updates every 5 seconds</span></div><div id="traffic" class="traffic"><p class="muted">No telemetry available</p></div></section><section class="grid-two"><section class="panel"><div class="section-heading"><h2>Edge sensors</h2><a href="/dashboard/edges">View all</a></div><div id="edges"><p class="muted">No Edge sensors registered</p></div></section><section class="panel"><div class="section-heading"><h2>Recent events</h2><a href="/dashboard/events">View all</a></div><div id="events"><p class="muted">No anomalies available</p></div></section></section><p class="note">ML identifies behavior that differs from the learned baseline. It does not prove an attack.</p></main><script src="/dashboard/static/dashboard.js"></script></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ROCKS Command Center</title>
+  <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><p class="eyebrow">ROCKS FLEET</p><h1>COMMAND CENTER</h1><p class="subtitle">Fleet health and investigation overview</p></div>
+    <div class="page-nav"><a class="ghost" href="/dashboard/edges">Edges</a><a class="ghost" href="/dashboard/telemetry">Telemetry</a><a class="ghost" href="/dashboard/alerts">Alerts</a><form method="post" action="/dashboard/logout"><button class="ghost" type="submit">Log out</button></form></div>
+  </header>
+  <main class="shell">
+    {% if data_error %}<p class="notice error" role="alert">{{ data_error }}</p>{% endif %}
+    <section id="summary" class="cards" aria-label="Fleet summary">
+      <article class="card"><span>Registered Edges</span><strong>{{ summary.edges.total if summary else '—' }}</strong></article>
+      <article class="card"><span>Online</span><strong>{{ summary.edges.online if summary else '—' }}</strong></article>
+      <article class="card"><span>Stale / Offline</span><strong>{{ summary.edges.stale if summary else '—' }}</strong></article>
+      <article class="card"><span>Telemetry · 5 min</span><strong>{{ summary.telemetry.recent if summary else '—' }}</strong></article>
+      <article class="card"><span>Open Alerts</span><strong>{{ summary.alerts.open if summary else '—' }}</strong></article>
+      <article class="card"><span>High / Critical</span><strong>{{ summary.alerts.high_critical if summary else '—' }}</strong></article>
+      <article class="card"><span>Open Investigations</span><strong>{{ summary.investigations.open if summary else '—' }}</strong></article>
+      <article class="card"><span>ML Baseline</span><strong>{{ summary.ml.status if summary else '—' }}</strong><small>{{ summary.ml.training_samples if summary else '—' }} samples</small></article>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">FLEET</p><h2>Edge sensor status</h2></div><a href="/dashboard/edges">View all sensors</a></div>
+      <div class="table-scroll"><table id="edge-table"><thead><tr><th>Sensor</th><th>Status</th><th>Last seen</th><th>Last telemetry</th><th>Telemetry records</th></tr></thead>
+        <tbody id="edges">{% if not summary or not summary.edges.total %}<tr><td colspan="5" class="muted">No Edge sensors registered.</td></tr>{% else %}<tr><td colspan="5" class="muted">Loading sensor details…</td></tr>{% endif %}</tbody>
+      </table></div>
+    </section>
+
+    <section class="grid-two">
+      <section class="panel">
+        <div class="section-heading"><div><p class="eyebrow">ALERTS</p><h2>Recent activity</h2><span class="muted">{{ summary.alerts.recent if summary else '—' }} created in 24 hours</span></div><a href="/dashboard/alerts">All alerts</a></div>
+        <div id="alerts">
+          {% if summary and summary.alerts.recent_items %}
+          <ul class="fleet-alert-list">{% for alert in summary.alerts.recent_items %}<li><div><span class="pill {{ alert.severity|lower }}">{{ alert.severity }}</span> <strong>{{ alert.rule_name or alert.alert_type }}</strong><small>{{ alert.timestamp }} · {{ alert.status }}</small><p>{{ alert.message }}</p></div>{% if alert.device_id %}<a href="/dashboard/investigation/{{ alert.device_id|urlencode }}?at={{ alert.timestamp|urlencode }}&amp;sensor_id={{ alert.sensor_id|urlencode }}">Investigate Device</a>{% endif %}</li>{% endfor %}</ul>
+          {% else %}<p class="muted">No alerts were created in the last 24 hours.</p>{% endif %}
+        </div>
+      </section>
+      <section class="panel">
+        <div class="section-heading"><div><p class="eyebrow">SYSTEM</p><h2>Health checks</h2></div><span class="pill {{ health.overall|lower }}">{{ health.overall }}</span></div>
+        <ul class="health-list">{% for check in health.checks %}<li><span class="pill {{ check.status|lower }}">{{ check.status }}</span><strong>{{ check.name.replace('_', ' ')|title }}</strong><span>{{ check.message }}</span></li>{% else %}<li class="muted">No diagnostic checks are available.</li>{% endfor %}</ul>
+        <p class="muted">Health checks are read-only. For detailed diagnostics run <code>rocks health verbose</code>.</p>
+      </section>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">OBSERVE</p><h2>Traffic overview</h2></div><span class="muted">Refreshes every 30 seconds</span></div>
+      <div id="traffic" class="traffic"><p class="muted">No telemetry available.</p></div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">DETECTION</p><h2>Recent events</h2></div><a href="/dashboard/events">View all events</a></div>
+      <div id="events"><p class="muted">No recent detection events.</p></div>
+    </section>
+    <p class="note">ROCKS reports observed metadata and configured indicators. Alerts and anomalies require administrator review.</p>
+  </main>
+  <script src="/dashboard/static/dashboard.js" defer></script>
+</body>
+</html>
