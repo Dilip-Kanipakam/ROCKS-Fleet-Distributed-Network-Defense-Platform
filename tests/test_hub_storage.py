@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from rocks.edge.features import TrafficFeatures
 from rocks.edge.telemetry import behavior_summary_telemetry
@@ -60,3 +60,29 @@ def test_ml_failure_does_not_break_telemetry_ingestion(tmp_path):
     service.ml = FailingML()
     assert service.ingest(make_record()) is True
     assert storage.count() == 1
+
+
+def test_dashboard_edge_rows_and_direct_telemetry_queries_are_bounded(tmp_path):
+    storage = HubStorage(tmp_path / "bounded-hub.db")
+    storage.initialize()
+    with storage._connect() as connection:
+        connection.executemany(
+            "INSERT INTO edges (sensor_id, name, status, created_at, last_seen, api_key_hash) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (f"EDGE-{index:04d}", f"Sensor {index}", "registered", "2026-01-01T00:00:00Z", None, "hash-only")
+                for index in range(501)
+            ],
+        )
+    assert len(storage.dashboard_edges(limit=10_000)) == 500
+    assert storage.dashboard_edge_counts() == {"total": 501, "online": 0, "stale": 0, "unknown": 501}
+
+    for index in range(3):
+        record = behavior_summary_telemetry(
+            TrafficFeatures(0, 60, 1, 60, 60, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1.0, 1.0),
+            "EDGE-QUERY",
+            device_id=f"DEVICE-{index}",
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=index),
+        )
+        storage.insert_telemetry(record)
+    assert len(storage.query_telemetry(limit=-1)) == 1
+    assert storage.query_telemetry(device_id="' OR 1=1 --") == []

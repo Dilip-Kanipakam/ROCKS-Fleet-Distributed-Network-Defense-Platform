@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import stat
 from pathlib import Path
 
 import pytest
@@ -56,7 +57,7 @@ def test_parser_has_expected_commands():
     assert all(choice in parser.format_help() for choice in choices)
 
 
-def test_setup_writes_edge_configuration(tmp_path):
+def test_setup_writes_edge_configuration(tmp_path, capsys):
     config_path = tmp_path / "rocks-config.yaml"
     interface = socket.if_nameindex()[0][1]
 
@@ -81,6 +82,8 @@ def test_setup_writes_edge_configuration(tmp_path):
 
     assert exit_code == 0
     config = load_config(config_path)
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+    assert "demo-api-key" not in capsys.readouterr().out
     assert config["deployment"]["mode"] == "edge"
     assert config["edge"]["sensor_id"] == "ROCKS-EDGE-SETUP"
     assert config["edge"]["hub_url"] == "http://127.0.0.1:8000"

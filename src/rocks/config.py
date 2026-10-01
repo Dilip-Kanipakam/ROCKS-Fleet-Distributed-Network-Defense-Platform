@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -156,12 +157,29 @@ def get_edge_agent_config(config_path: str | Path | None = None) -> dict[str, An
     config = load_config(config_path)
     edge = config.get("edge", {})
     telemetry = config.get("telemetry", {})
+    if not isinstance(edge, dict) or not isinstance(telemetry, dict):
+        raise ValueError("edge and telemetry configuration sections must be mappings")
+    raw_buffer_limit = edge.get("buffer_limit", 10_000)
+    raw_window_seconds = telemetry.get("window_seconds", 60)
+    try:
+        buffer_limit = int(raw_buffer_limit)
+        telemetry_window_seconds = float(raw_window_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("edge.buffer_limit and telemetry.window_seconds must be positive numbers") from exc
+    if (
+        isinstance(raw_buffer_limit, bool)
+        or buffer_limit <= 0
+        or (isinstance(raw_buffer_limit, (int, float)) and raw_buffer_limit != buffer_limit)
+    ):
+        raise ValueError("edge.buffer_limit must be a positive integer")
+    if isinstance(raw_window_seconds, bool) or not math.isfinite(telemetry_window_seconds) or telemetry_window_seconds <= 0:
+        raise ValueError("telemetry.window_seconds must be a positive finite number")
     return {
         "sensor_id": os.getenv("ROCKS_SENSOR_ID", str(edge.get("sensor_id", "ROCKS-EDGE-01"))),
         "interface": os.getenv("ROCKS_INTERFACE", str(edge.get("interface", ""))),
         "hub_url": os.getenv("ROCKS_HUB_URL", str(edge.get("hub_url", config.get("hub", {}).get("url", "")))),
         "api_key": os.getenv("ROCKS_API_KEY", str(config.get("hub", {}).get("api_key", ""))),
         "send_interval_seconds": float(edge.get("send_interval_seconds", 5)),
-        "buffer_limit": int(edge.get("buffer_limit", 10_000)),
-        "telemetry_window_seconds": float(telemetry.get("window_seconds", 60)),
+        "buffer_limit": buffer_limit,
+        "telemetry_window_seconds": telemetry_window_seconds,
     }

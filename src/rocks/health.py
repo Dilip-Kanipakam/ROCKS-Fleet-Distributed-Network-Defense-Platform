@@ -274,6 +274,12 @@ class HealthChecker:
             raise ValueError("health.telemetry_freshness_seconds must be a positive finite number")
         if mode in {"edge", "all-in-one"}:
             edge = config["edge"]
+            buffer_limit = edge.get("buffer_limit", 10_000)
+            if isinstance(buffer_limit, bool) or not isinstance(buffer_limit, int) or buffer_limit <= 0:
+                raise ValueError("edge.buffer_limit must be a positive integer")
+            window_seconds = config["telemetry"].get("window_seconds", 60)
+            if isinstance(window_seconds, bool) or not isinstance(window_seconds, (int, float)) or not math.isfinite(window_seconds) or window_seconds <= 0:
+                raise ValueError("telemetry.window_seconds must be a positive finite number")
             if not str(os.getenv("ROCKS_SENSOR_ID", edge.get("sensor_id", ""))).strip():
                 raise ValueError("edge.sensor_id is required")
             if not str(os.getenv("ROCKS_INTERFACE", edge.get("interface", ""))).strip():
@@ -314,6 +320,13 @@ class HealthChecker:
                 raise ValueError("a dashboard administrator password hash is required")
             if not os.getenv("ROCKS_SESSION_SECRET", str(dashboard.get("session_secret", ""))).strip():
                 raise ValueError("a dashboard session secret is required")
+        alerts = config["alerts"]
+        if not isinstance(alerts.get("enabled", True), bool):
+            raise ValueError("alerts.enabled must be true or false")
+        for threshold_name in ("anomaly_threshold", "high_retention_threshold"):
+            threshold = alerts.get(threshold_name, 0.70)
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or not 0 <= threshold <= 1:
+                raise ValueError(f"alerts.{threshold_name} must be a finite number between 0 and 1")
 
 
     def _service_states(self) -> dict[str, tuple[str, str] | None]:

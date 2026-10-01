@@ -7,7 +7,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from rocks.cli import main
-from rocks.config import write_config
+from rocks.alerts.config import get_alert_config
+from rocks.config import get_edge_agent_config, write_config
 from rocks.health import HealthChecker, HealthStatus, aggregate_health
 from rocks.service_manager import EDGE_UNIT, HUB_UNIT
 
@@ -133,6 +134,48 @@ def test_health_reports_running_services_and_fresh_telemetry(tmp_path):
     assert report.get("hub_api").status == HealthStatus.OK
     assert report.get("dashboard").status == HealthStatus.OK
     assert report.get("telemetry").status == HealthStatus.OK
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "value", "message"),
+    [
+        ("alerts", "anomaly_threshold", float("nan"), "alerts.anomaly_threshold"),
+        ("alerts", "high_retention_threshold", 1.1, "alerts.high_retention_threshold"),
+        ("edge", "buffer_limit", 0, "edge.buffer_limit"),
+        ("telemetry", "window_seconds", float("inf"), "telemetry.window_seconds"),
+    ],
+)
+def test_health_rejects_malformed_operational_thresholds(tmp_path, section, key, value, message):
+    config = _config(tmp_path)
+    config[section][key] = value
+    path = write_config(config, tmp_path / f"invalid-{section}-{key}.yaml")
+    report = HealthChecker(config_path=path, service_manager=FakeServiceManager()).run()
+    assert report.overall == HealthStatus.UNHEALTHY
+    assert report.get("configuration").status == HealthStatus.ERROR
+    assert message in report.get("configuration").message
+
+
+def test_alert_config_rejects_out_of_range_threshold(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    config["alerts"]["anomaly_threshold"] = -0.1
+    config_path = write_config(config, tmp_path / "invalid-alerts.yaml")
+    monkeypatch.setenv("ROCKS_CONFIG_PATH", str(config_path))
+    with pytest.raises(ValueError, match="alerts.anomaly_threshold"):
+        get_alert_config()
+
+
+def test_edge_runtime_config_environment_overrides_remain_functional(tmp_path, monkeypatch):
+    config_path = write_config(_config(tmp_path), tmp_path / "edge-env.yaml")
+    monkeypatch.setenv("ROCKS_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("ROCKS_SENSOR_ID", "EDGE-OVERRIDE")
+    monkeypatch.setenv("ROCKS_INTERFACE", "eth-test-override")
+    monkeypatch.setenv("ROCKS_HUB_URL", "https://hub.example.test")
+    monkeypatch.setenv("ROCKS_API_KEY", "environment-only-key")
+    values = get_edge_agent_config()
+    assert values["sensor_id"] == "EDGE-OVERRIDE"
+    assert values["interface"] == "eth-test-override"
+    assert values["hub_url"] == "https://hub.example.test"
+    assert values["api_key"] == "environment-only-key"
 
 
 @pytest.mark.parametrize(

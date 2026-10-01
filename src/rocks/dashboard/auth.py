@@ -59,14 +59,17 @@ def verify_session(value: str | None, secret: str) -> str | None:
     try:
         supplied = _b64decode(signature)
         payload = json.loads(_b64decode(encoded).decode("utf-8"))
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, TypeError, OverflowError):
         return None
     if not hmac.compare_digest(supplied, expected):
         return None
-    if not isinstance(payload, dict) or int(payload.get("expires", 0)) < int(time.time()):
+    if not isinstance(payload, dict):
+        return None
+    expires = payload.get("expires")
+    if isinstance(expires, bool) or not isinstance(expires, int) or expires <= int(time.time()):
         return None
     username = payload.get("username")
-    return str(username) if username else None
+    return username if isinstance(username, str) and username else None
 
 
 def is_authenticated(request: Request, config: DashboardAuthConfig) -> bool:

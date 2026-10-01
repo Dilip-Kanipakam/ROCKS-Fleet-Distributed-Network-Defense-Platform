@@ -3,6 +3,8 @@ from __future__ import annotations
 import smtplib
 import sqlite3
 import ssl
+import io
+import logging
 from dataclasses import replace
 
 import pytest
@@ -260,6 +262,9 @@ def test_hub_ingest_sends_once_only_for_new_alert_and_preserves_on_failure(tmp_p
     notifications = EmailNotificationService(config, smtp_factory=FailingSMTP)
     storage = HubStorage(tmp_path / "hub.db")
     service = HubService(storage, email_notifications=notifications)
+    captured_logs = io.StringIO()
+    capture_handler = logging.StreamHandler(captured_logs)
+    service._logger.addHandler(capture_handler)
     record = generate_records(Scenario.HIGH_TRAFFIC, count=1)[0]
     analysis = analyze_behavior_summary(
         record,
@@ -283,6 +288,8 @@ def test_hub_ingest_sends_once_only_for_new_alert_and_preserves_on_failure(tmp_p
     assert alert.notification_attempt_count == 1
     assert alert.notification_error == "smtp_timeout"
     assert smtp_calls == [1]
+    service._logger.removeHandler(capture_handler)
+    assert "SMTP-SUPER-SECRET" not in captured_logs.getvalue()
 
 
 def test_hub_ingest_success_notification_is_not_repeated_for_duplicate_alert(tmp_path):

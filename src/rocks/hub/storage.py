@@ -206,8 +206,9 @@ class HubStorage:
             )
         return stored_event.to_dict()
 
-    def investigation_events(self, investigation_id: str) -> list[dict[str, Any]] | None:
+    def investigation_events(self, investigation_id: str, *, limit: int = MAX_EVENTS) -> list[dict[str, Any]] | None:
         self.initialize()
+        bounded_limit = min(max(int(limit), 1), MAX_EVENTS)
         with self._connect() as connection:
             exists = connection.execute(
                 "SELECT 1 FROM investigations WHERE investigation_id = ?", (investigation_id,)
@@ -215,8 +216,8 @@ class HubStorage:
             if exists is None:
                 return None
             rows = connection.execute(
-                "SELECT event_id, investigation_id, timestamp, event_type, severity, message, source, metadata_json FROM investigation_events WHERE investigation_id = ? ORDER BY timestamp ASC, rowid ASC",
-                (investigation_id,),
+                "SELECT event_id, investigation_id, timestamp, event_type, severity, message, source, metadata_json FROM investigation_events WHERE investigation_id = ? ORDER BY CASE WHEN event_type = 'INVESTIGATION_CREATED' THEN 0 ELSE 1 END, timestamp ASC, rowid ASC LIMIT ?",
+                (investigation_id, bounded_limit),
             ).fetchall()
         return [
             {
@@ -227,7 +228,7 @@ class HubStorage:
                 "severity": row["severity"],
                 "message": row["message"],
                 "source": row["source"],
-                "metadata": json.loads(row["metadata_json"]),
+                "metadata": _safe_json_object(row["metadata_json"]) or {},
             }
             for row in rows
         ]
@@ -411,7 +412,7 @@ class HubStorage:
             ).fetchall()
         result = []
         for row in rows:
-            details = json.loads(row["details_json"]) if row["details_json"] else None
+            details = _safe_json_object(row["details_json"])
             result.append(
                 InvestigationEvent(
                     timestamp=row["timestamp"],
@@ -541,7 +542,12 @@ class HubStorage:
         self.initialize()
         with self._connect() as connection:
             row = connection.execute("SELECT payload_json FROM telemetry WHERE id = ?", (telemetry_id,)).fetchone()
-        return telemetry_from_json(row[0]) if row else None
+        if row is None:
+            return None
+        try:
+            return telemetry_from_json(row[0])
+        except (TypeError, ValueError):
+            return None
 
     def telemetry_context(
         self,
@@ -611,7 +617,12 @@ class HubStorage:
         self.initialize()
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
-        records = [telemetry_from_json(row[0]) for row in rows]
+        records = []
+        for row in rows:
+            try:
+                records.append(telemetry_from_json(row[0]))
+            except (TypeError, ValueError):
+                continue
         return {
             "trigger": self._context_item(anchor) if anchor else None,
             "related": [self._context_item(record) for record in records],
@@ -669,10 +680,16 @@ class HubStorage:
                 clauses.append(f"{column} = ?")
                 values.append(value)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        values.append(limit)
+        values.append(min(max(int(limit), 1), 1000))
         with self._connect() as connection:
             rows = connection.execute(f"SELECT payload_json FROM telemetry{where} ORDER BY timestamp DESC LIMIT ?", values).fetchall()
-        return [telemetry_from_json(row[0]) for row in rows]
+        records = []
+        for row in rows:
+            try:
+                records.append(telemetry_from_json(row[0]))
+            except (TypeError, ValueError):
+                continue
+        return records
 
     def count(self) -> int:
         self.initialize()
@@ -756,7 +773,10 @@ class HubStorage:
             ).fetchall()
         result = []
         for row in rows:
-            record = telemetry_from_json(row[0])
+            try:
+                record = telemetry_from_json(row[0])
+            except (TypeError, ValueError):
+                continue
             payload = record.payload
             source = payload.get("source", {}) if isinstance(payload.get("source"), dict) else {}
             destination = payload.get("destination", {}) if isinstance(payload.get("destination"), dict) else {}
@@ -898,7 +918,7 @@ class HubStorage:
             notification_sent_at=row["notification_sent_at"],
             notification_attempt_count=row["notification_attempt_count"],
             notification_error=row["notification_error"],
-            assessment=json.loads(row["assessment_json"]) if row["assessment_json"] else None,
+            assessment=_safe_json_object(row["assessment_json"]),
         )
 
     def insert_detection_assessment(self, assessment: Any) -> bool:
@@ -942,7 +962,7 @@ class HubStorage:
         return [
             {
                 **{key: row[key] for key in row.keys() if key != "assessment_json"},
-                "assessment": json.loads(row["assessment_json"]),
+                "assessment": _safe_json_object(row["assessment_json"]),
             }
             for row in rows
         ]
@@ -1016,7 +1036,7 @@ class HubStorage:
         for row in rows:
             result = dict(row)
             assessment_json = result.pop("assessment_json", None)
-            result["assessment"] = json.loads(assessment_json) if assessment_json else None
+            result["assessment"] = _safe_json_object(assessment_json)
             results.append(result)
         return results
 
@@ -1121,6 +1141,16 @@ class HubStorage:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _safe_json_object(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def edge_liveness_status(

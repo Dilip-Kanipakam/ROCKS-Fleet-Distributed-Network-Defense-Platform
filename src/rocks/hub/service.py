@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import re
+from datetime import datetime
 from typing import Any
 
 from rocks import __version__
@@ -15,6 +18,11 @@ from rocks.alerts.config import get_alert_config, get_email_config
 from rocks.alerts.email import EmailNotificationService, NotificationError
 from rocks.detection.config import get_detection_config
 from rocks.detection.engine import DetectionEngine
+
+_SENSITIVE_TELEMETRY_KEY = re.compile(
+    r"password|passwd|smtp|api.?key|token|cookie|authorization|session.?secret|credential|raw.?payload|packet.?payload|packet.?data|frame.?data",
+    re.IGNORECASE,
+)
 
 
 class HubService:
@@ -49,10 +57,59 @@ class HubService:
         }
 
     def validate_telemetry(self, data: dict[str, Any]) -> TelemetryRecord:
+        allowed_fields = {
+            "record_id", "schema_version", "timestamp", "sensor_id", "device_id",
+            "event_type", "payload", "retention_priority", "retention_reason",
+        }
+        if not isinstance(data, dict) or set(data) - allowed_fields:
+            raise ValueError("Telemetry contains unsupported fields")
+        for field in ("schema_version", "timestamp", "sensor_id", "event_type"):
+            if not isinstance(data.get(field), str):
+                raise ValueError(f"Telemetry {field} must be text")
+        if data.get("device_id") is not None and not isinstance(data.get("device_id"), str):
+            raise ValueError("Telemetry device_id must be text or null")
+        if not isinstance(data.get("payload"), dict):
+            raise ValueError("Telemetry payload must be an object")
+        supplied_record_id = data.get("record_id")
+        if supplied_record_id is not None and (
+            not isinstance(supplied_record_id, str)
+            or len(supplied_record_id) > 128
+            or any(ord(character) < 32 for character in supplied_record_id)
+        ):
+            raise ValueError("Invalid record_id")
+        retention_priority = data.get("retention_priority")
+        if retention_priority is not None and (
+            isinstance(retention_priority, bool)
+            or not isinstance(retention_priority, int)
+            or not 0 <= retention_priority <= 100
+        ):
+            raise ValueError("Invalid retention_priority")
+        retention_reason = data.get("retention_reason")
+        if retention_reason is not None and (
+            not isinstance(retention_reason, str) or len(retention_reason) > 500
+        ):
+            raise ValueError("Invalid retention_reason")
         try:
             record = telemetry_from_dict(data)
         except (TypeError, ValueError) as exc:
             raise ValueError(str(exc)) from exc
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", record.sensor_id):
+            raise ValueError("Invalid sensor_id")
+        if record.device_id is not None and (
+            not isinstance(record.device_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@|+-]{0,127}", record.device_id)
+        ):
+            raise ValueError("Invalid device_id")
+        try:
+            timestamp = datetime.fromisoformat(record.timestamp.replace("Z", "+00:00"))
+            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                raise ValueError("timestamp requires a timezone")
+            payload_json = json.dumps(record.payload, separators=(",", ":"), allow_nan=False)
+        except (AttributeError, TypeError, ValueError, RecursionError) as exc:
+            raise ValueError("Invalid timestamp or telemetry payload") from exc
+        if len(payload_json.encode("utf-8")) > 32 * 1024:
+            raise ValueError("Telemetry payload exceeds the 32 KiB limit")
+        _validate_telemetry_payload_keys(record.payload)
         if record.event_type not in EVENT_TYPES:
             raise ValueError("unsupported event_type")
         required_payloads = {
@@ -131,3 +188,16 @@ class HubService:
             "active_edges": sum(edge.status == "ONLINE" for edge in edges),
             "event_type_counts": self.storage.event_type_counts(),
         }
+
+
+def _validate_telemetry_payload_keys(value: Any, *, depth: int = 0) -> None:
+    if depth > 32:
+        raise ValueError("Telemetry payload nesting exceeds the 32-level limit")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str) or _SENSITIVE_TELEMETRY_KEY.search(key):
+                raise ValueError("Telemetry payload contains a sensitive or unsupported field")
+            _validate_telemetry_payload_keys(child, depth=depth + 1)
+    elif isinstance(value, list):
+        for child in value:
+            _validate_telemetry_payload_keys(child, depth=depth + 1)

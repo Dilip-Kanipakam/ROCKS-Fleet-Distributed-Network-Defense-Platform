@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
@@ -72,6 +73,72 @@ def test_invalid_telemetry_is_rejected(tmp_path):
         headers={"Authorization": f"Bearer {key}"},
     )
     assert response.status_code == 422
+
+
+def test_telemetry_ingest_rejects_malformed_unbounded_and_sensitive_input(tmp_path):
+    client, key, _service = client_and_key(tmp_path)
+    headers = {"Authorization": f"Bearer {key}"}
+    valid = telemetry_to_dict(make_record())
+
+    bad_inputs = []
+    bad_timestamp = dict(valid, timestamp="not-a-timestamp")
+    bad_inputs.append(bad_timestamp)
+    bad_sensor = dict(valid, sensor_id="bad/sensor")
+    bad_inputs.append(bad_sensor)
+    unexpected = dict(valid, internal_token="must-not-be-accepted")
+    bad_inputs.append(unexpected)
+    sensitive_payload = dict(valid, payload={**valid["payload"], "packet_payload": "raw bytes"})
+    bad_inputs.append(sensitive_payload)
+    nonfinite_payload = dict(valid, payload={**valid["payload"], "custom_metric": float("nan")})
+    bad_inputs.append(nonfinite_payload)
+    oversized_payload = dict(valid, payload={**valid["payload"], "description": "x" * (33 * 1024)})
+    bad_inputs.append(oversized_payload)
+    nested: object = "value"
+    for _ in range(34):
+        nested = {"child": nested}
+    nested_payload = dict(valid, payload={**valid["payload"], "nested": nested})
+    bad_inputs.append(nested_payload)
+
+    for body in bad_inputs:
+        if body is nonfinite_payload:
+            response = client.post(
+                "/api/v1/telemetry",
+                content=json.dumps(body, allow_nan=True),
+                headers={**headers, "Content-Type": "application/json"},
+            )
+            assert response.status_code == 422
+            continue
+        response = client.post("/api/v1/telemetry", json=body, headers=headers)
+        assert response.status_code == 422
+    oversized_request = client.post(
+        "/api/v1/telemetry",
+        content=b"x" * (129 * 1024),
+        headers={**headers, "Content-Type": "application/json"},
+    )
+    assert oversized_request.status_code == 413
+    malformed = client.post(
+        "/api/v1/telemetry",
+        content=b"{",
+        headers={**headers, "Content-Type": "application/json"},
+    )
+    assert malformed.status_code == 422
+
+
+def test_telemetry_ingest_rejects_type_coercion_and_invalid_paths(tmp_path):
+    client, key, _service = client_and_key(tmp_path)
+    headers = {"Authorization": f"Bearer {key}"}
+    valid = telemetry_to_dict(make_record())
+
+    for field, value in (("sensor_id", 42), ("device_id", 42), ("timestamp", 42), ("payload", [])):
+        response = client.post(
+            "/api/v1/telemetry",
+            json={**valid, field: value},
+            headers=headers,
+        )
+        assert response.status_code == 422
+
+    assert client.get("/api/v1/telemetry/not%20an%20id", headers=headers).status_code == 422
+    assert client.get("/api/v1/edges/bad!sensor", headers=headers).status_code == 422
 
 
 def test_query_endpoints_require_registered_edge_key(tmp_path):

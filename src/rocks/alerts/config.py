@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass
 
 from rocks.config import load_config
@@ -15,10 +16,27 @@ class AlertConfig:
 
 def get_alert_config() -> AlertConfig:
     values = load_config().get("alerts", {})
+    if not isinstance(values, dict):
+        raise ValueError("alerts configuration must be a mapping")
+    enabled = values.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("alerts.enabled must be true or false")
+    thresholds: dict[str, float] = {}
+    for name in ("anomaly_threshold", "high_retention_threshold"):
+        raw_value = values.get(name, 0.70)
+        if isinstance(raw_value, bool):
+            raise ValueError(f"alerts.{name} must be a finite number between 0 and 1")
+        try:
+            numeric = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"alerts.{name} must be a finite number between 0 and 1") from exc
+        if not math.isfinite(numeric) or not 0 <= numeric <= 1:
+            raise ValueError(f"alerts.{name} must be a finite number between 0 and 1")
+        thresholds[name] = numeric
     return AlertConfig(
-        enabled=bool(values.get("enabled", True)),
-        anomaly_threshold=float(values.get("anomaly_threshold", 0.70)),
-        high_retention_threshold=float(values.get("high_retention_threshold", 0.70)),
+        enabled=enabled,
+        anomaly_threshold=thresholds["anomaly_threshold"],
+        high_retention_threshold=thresholds["high_retention_threshold"],
     )
 
 

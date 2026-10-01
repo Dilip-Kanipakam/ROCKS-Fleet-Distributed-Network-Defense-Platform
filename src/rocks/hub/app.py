@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
+import re
+import ipaddress
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Query, status
+from fastapi import FastAPI, Header, HTTPException, Path as APIPath, Query, status
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from rocks.hub.schemas import EdgeResponse, HealthResponse, StatsResponse, TelemetryIngestResponse, TelemetryResponse
@@ -26,6 +30,57 @@ from rocks.dashboard.service import DashboardService
 from rocks.hub.config import get_hub_config
 
 
+_MAX_REQUEST_BODY_BYTES = 128 * 1024
+
+
+class RequestBodyLimitMiddleware:
+    def __init__(self, app: Any, maximum_bytes: int = _MAX_REQUEST_BODY_BYTES) -> None:
+        self.app = app
+        self.maximum_bytes = maximum_bytes
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope.get("method") not in {"POST", "PUT", "PATCH"}:
+            await self.app(scope, receive, send)
+            return
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        raw_length = headers.get(b"content-length")
+        if raw_length is not None:
+            try:
+                content_length = int(raw_length)
+            except ValueError:
+                response = JSONResponse({"detail": "Invalid Content-Length"}, status_code=400)
+                await response(scope, receive, send)
+                return
+            if content_length < 0 or content_length > self.maximum_bytes:
+                response = JSONResponse({"detail": "Request body exceeds the 128 KiB limit"}, status_code=413)
+                await response(scope, receive, send)
+                return
+
+        messages: list[dict[str, Any]] = []
+        body_size = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            if message["type"] != "http.request":
+                continue
+            body_size += len(message.get("body", b""))
+            if body_size > self.maximum_bytes:
+                response = JSONResponse({"detail": "Request body exceeds the 128 KiB limit"}, status_code=413)
+                await response(scope, receive, send)
+                return
+            messages.append(message)
+            if not message.get("more_body", False):
+                break
+
+        async def replay_receive() -> dict[str, Any]:
+            if messages:
+                return messages.pop(0)
+            return {"type": "http.disconnect"}
+
+        await self.app(scope, replay_receive, send)
+
+
 def create_app(database_path: str | None = None) -> FastAPI:
     hub_config = get_hub_config()
     storage = HubStorage(
@@ -34,7 +89,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
     )
     service = HubService(storage)
     app = FastAPI(title="ROCKS Hub", version="0.1.0")
+    app.add_middleware(RequestBodyLimitMiddleware)
     app.state.hub_service = service
+
+    @app.exception_handler(sqlite3.Error)
+    async def sqlite_error_handler(_request: Any, exc: sqlite3.Error) -> JSONResponse:
+        service._logger.error("SQLite request failed error_type=%s", type(exc).__name__)
+        return JSONResponse({"detail": "Storage is temporarily unavailable"}, status_code=503)
+
     dashboard_config = get_dashboard_config()
     if dashboard_config.enabled:
         dashboard_directory = Path(__file__).resolve().parents[1] / "dashboard"
@@ -77,27 +139,46 @@ def create_app(database_path: str | None = None) -> FastAPI:
     @app.get("/api/v1/telemetry", response_model=list[TelemetryResponse])
     def list_telemetry(
         authorization: str | None = Header(default=None),
-        sensor_id: str | None = None,
-        device_id: str | None = None,
-        event_type: str | None = None,
+        sensor_id: str | None = Query(default=None, min_length=1, max_length=64),
+        device_id: str | None = Query(default=None, min_length=1, max_length=128),
+        event_type: str | None = Query(default=None, min_length=1, max_length=32),
         limit: int = Query(default=100, ge=1, le=1000),
     ) -> list[TelemetryRecord]:
         authenticate_query(authorization)
+        if sensor_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", sensor_id):
+            raise HTTPException(status_code=422, detail="Invalid sensor_id")
+        if device_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@|+-]{0,127}", device_id):
+            raise HTTPException(status_code=422, detail="Invalid device_id")
+        if event_type is not None and event_type not in EVENT_TYPES:
+            raise HTTPException(status_code=422, detail="Unsupported event_type")
         return service.storage.query_telemetry(sensor_id=sensor_id, device_id=device_id, event_type=event_type, limit=limit)
 
     @app.get("/api/v1/telemetry/context")
     def telemetry_context(
         authorization: str | None = Header(default=None),
-        device_id: str | None = None,
-        source_ip: str | None = None,
-        sensor_id: str | None = None,
-        event_type: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        telemetry_id: str | None = None,
+        device_id: str | None = Query(default=None, min_length=1, max_length=128),
+        source_ip: str | None = Query(default=None, min_length=1, max_length=64),
+        sensor_id: str | None = Query(default=None, min_length=1, max_length=64),
+        event_type: str | None = Query(default=None, min_length=1, max_length=32),
+        since: str | None = Query(default=None, min_length=1, max_length=64),
+        until: str | None = Query(default=None, min_length=1, max_length=64),
+        telemetry_id: str | None = Query(default=None, min_length=1, max_length=128),
         limit: int = Query(default=50, ge=1, le=100),
     ) -> dict[str, Any]:
         authenticate_query(authorization)
+        if device_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@|+-]{0,127}", device_id):
+            raise HTTPException(status_code=422, detail="Invalid device_id")
+        if sensor_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", sensor_id):
+            raise HTTPException(status_code=422, detail="Invalid sensor_id")
+        if event_type is not None and event_type not in EVENT_TYPES:
+            raise HTTPException(status_code=422, detail="Unsupported event_type")
+        try:
+            if source_ip is not None:
+                ipaddress.ip_address(source_ip)
+            if since is not None or until is not None:
+                resolve_time_range(since, until)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
             return service.storage.telemetry_context(
                 device_id=device_id,
@@ -110,14 +191,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 limit=limit,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/api/v1/investigations")
     def investigate_device(
         authorization: str | None = Header(default=None),
         device_id: str = Query(..., min_length=1, max_length=128),
-        start: str | None = None,
-        end: str | None = None,
+        start: str | None = Query(default=None, min_length=1, max_length=64),
+        end: str | None = Query(default=None, min_length=1, max_length=64),
         sensor_id: str | None = Query(default=None, min_length=1, max_length=128),
     ) -> dict[str, Any]:
         authenticate_query(authorization)
@@ -337,8 +418,10 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return investigation
 
     @app.get("/api/v1/telemetry/{telemetry_id}", response_model=TelemetryResponse)
-    def get_telemetry(telemetry_id: str, authorization: str | None = Header(default=None)) -> TelemetryRecord:
+    def get_telemetry(telemetry_id: str = APIPath(..., min_length=1, max_length=128), authorization: str | None = Header(default=None)) -> TelemetryRecord:
         authenticate_query(authorization)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", telemetry_id):
+            raise HTTPException(status_code=422, detail="Invalid telemetry_id")
         record = service.storage.get_telemetry(telemetry_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Telemetry record not found")
@@ -350,8 +433,10 @@ def create_app(database_path: str | None = None) -> FastAPI:
         return [edge.to_dict() for edge in service.edges()]
 
     @app.get("/api/v1/edges/{sensor_id}", response_model=EdgeResponse)
-    def get_edge(sensor_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    def get_edge(sensor_id: str = APIPath(..., min_length=1, max_length=64), authorization: str | None = Header(default=None)) -> dict[str, Any]:
         authenticate_query(authorization)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", sensor_id):
+            raise HTTPException(status_code=422, detail="Invalid sensor_id")
         edge = service.registry.get(sensor_id)
         if edge is None:
             raise HTTPException(status_code=404, detail="Edge sensor not found")

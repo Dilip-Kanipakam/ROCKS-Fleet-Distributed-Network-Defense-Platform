@@ -287,7 +287,7 @@ def test_case_api_create_retrieve_append_and_order_timeline(tmp_path):
     later_event = client.post(
         f"/api/v1/investigations/{investigation_id}/events",
         json={
-            "timestamp": "2026-09-30T12:05:00Z",
+                "timestamp": "2099-09-30T12:05:00Z",
             "event_type": "ALERT",
             "severity": "HIGH",
             "message": "High risk alert generated.",
@@ -299,7 +299,7 @@ def test_case_api_create_retrieve_append_and_order_timeline(tmp_path):
     earlier_event = client.post(
         f"/api/v1/investigations/{investigation_id}/events",
         json={
-            "timestamp": "2026-09-30T12:04:00Z",
+                "timestamp": "2099-09-30T12:04:00Z",
             "event_type": "DETECTION",
             "message": "Suspicious flow detected.",
             "metadata": {"assessment_id": "assessment-789"},
@@ -395,6 +395,33 @@ def test_case_storage_persists_investigation_and_events_after_reload(tmp_path):
     assert reloaded.get_investigation(case["investigation_id"])["title"] == "Persistence test"
     persisted_events = reloaded.investigation_events(case["investigation_id"])
     assert [event["event_type"] for event in persisted_events] == ["INVESTIGATION_CREATED", "ANALYST_NOTE"]
+
+
+def test_case_timeline_is_bounded_and_malformed_stored_metadata_is_safe(tmp_path):
+    storage = HubStorage(tmp_path / "bounded-case.db")
+    case = storage.create_investigation(title="Bounded timeline")
+    case_id = case["investigation_id"]
+    from rocks.hub.investigation import validate_case_event
+
+    for index in range(3):
+        storage.add_investigation_event(
+            case_id,
+            validate_case_event({
+                "timestamp": f"2026-09-30T12:00:0{index}Z",
+                "event_type": "ANALYST_NOTE",
+                "message": f"Synthetic note {index}",
+                "metadata": {"sequence": index},
+            }),
+        )
+    with storage._connect() as connection:
+        connection.execute(
+            "UPDATE investigation_events SET metadata_json = ? WHERE investigation_id = ? AND event_type = ?",
+            ("{malformed", case_id, "ANALYST_NOTE"),
+        )
+    timeline = storage.investigation_events(case_id, limit=2)
+    assert len(timeline) == 2
+    assert timeline[0]["metadata"] == {}
+    assert len(storage.investigation_notes(case_id)) == 3
 
 
 def test_investigation_cli_uses_configured_local_database(tmp_path, monkeypatch, capsys):
