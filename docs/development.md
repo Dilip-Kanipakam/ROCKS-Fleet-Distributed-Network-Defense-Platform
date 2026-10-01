@@ -56,6 +56,21 @@ The project is intentionally planned in chunks so the architecture remains coher
 - local investigation alert persistence and dashboard display
 - no attack traffic, automatic blocking, or email by default
 
+## Chunk 24: Demo and simulation workflow
+
+The demo workflow is intentionally synthetic and operator-friendly. It runs through the existing ROCKS pipeline without touching production data or requiring a physical network interface:
+
+```bash
+rocks demo --mode normal
+rocks demo --mode anomaly
+rocks demo --mode full
+rocks simulate --scenario high_traffic --count 5
+rocks simulate --scenario reconnaissance_like
+rocks simulate --scenario deauth_related_simulation
+```
+
+Supported scenarios are `normal`, `high_traffic`, `reconnaissance_like`, `dns_anomaly`, `reconnect_storm`, `deauth_related_simulation`, and `mixed_anomalous`. Each scenario uses the project's existing simulator, preserves the `simulation=true` marker for synthetic events, and keeps all telemetry clearly separated from real network observations. The demo does not run scans, packet injections, deauthentication frames, firewall changes, or any other dangerous network action.
+
 ## Chunk 8: Integration, deployment, testing, and hardening
 
 - end-to-end validation

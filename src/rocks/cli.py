@@ -41,7 +41,7 @@ from rocks.ml.demo import run_demo as run_ml_demo
 from rocks.ml.service import MLService
 from rocks.dashboard.config import get_dashboard_config
 from rocks.paths import data_dir
-from rocks.demo import run_demo as run_mvp_demo
+from rocks.demo import DemoMode, normalize_demo_mode, normalize_demo_scenario, run_demo as run_mvp_demo, run_demo_sequence
 from rocks.alerts.config import get_alert_config
 from rocks.alerts.config import get_email_config
 from rocks.alerts.email import EmailNotificationService, NotificationError
@@ -160,9 +160,21 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_run.add_argument("--host", default=None)
     dashboard_run.add_argument("--port", type=int, default=None)
     simulate_parser = subparsers.add_parser("simulate", help="generate safe synthetic telemetry")
+    simulate_parser.add_argument("--scenario", default=None)
+    simulate_parser.add_argument("--count", type=int, default=1)
+    simulate_parser.add_argument("--sensor-id", default="ROCKS-SIM-01")
     simulate_subparsers = simulate_parser.add_subparsers(dest="simulate_command")
-    for name in ("normal", "anomaly", "mixed"):
-        scenario_parser = simulate_subparsers.add_parser(name, help=f"generate {name} synthetic telemetry")
+    for scenario in Scenario:
+        aliases = []
+        if scenario == Scenario.HIGH_TRAFFIC:
+            aliases.append("anomaly")
+        if scenario == Scenario.MIXED_ANOMALOUS:
+            aliases.append("mixed")
+        scenario_parser = simulate_subparsers.add_parser(
+            scenario.value,
+            aliases=aliases,
+            help=f"generate {scenario.value} synthetic telemetry",
+        )
         scenario_parser.add_argument("--count", type=int, default=1)
         scenario_parser.add_argument("--interval", type=float, default=0.0)
         scenario_parser.add_argument("--sensor-id", default="ROCKS-SIM-01")
@@ -186,7 +198,11 @@ def build_parser() -> argparse.ArgumentParser:
     investigation_notes.add_argument("investigation_id")
     investigation_close = investigation_subparsers.add_parser("close", help="close a resolved investigation")
     investigation_close.add_argument("investigation_id")
-    demo_parser = subparsers.add_parser("demo", help="run the complete safe MVP demonstration")
+    demo_parser = subparsers.add_parser("demo", help="run a safe synthetic demo across the ROCKS pipeline")
+    demo_parser.add_argument("--mode", choices=[mode.value for mode in DemoMode], default=DemoMode.FULL.value)
+    demo_parser.add_argument("--scenario", default=None)
+    demo_parser.add_argument("--count", type=int, default=1)
+    demo_parser.add_argument("--sensor-id", default="ROCKS-DEMO-01")
     demo_parser.set_defaults(demo_command=True)
     return parser
 
@@ -784,10 +800,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "simulate":
-        scenario = {"normal": Scenario.NORMAL, "anomaly": Scenario.HIGH_TRAFFIC, "mixed": Scenario.MIXED_ANOMALOUS}[args.simulate_command]
+        scenario_name = args.simulate_command or getattr(args, "scenario", None)
+        if scenario_name is None:
+            scenario_name = "normal"
+        try:
+            scenario = normalize_demo_scenario(scenario_name)
+        except ValueError as exc:
+            print(f"ROCKS simulate error: {exc}", file=sys.stderr)
+            return 2
         records = generate_records(scenario, count=args.count, sensor_id=args.sensor_id)
         simulation = any(record.payload.get("simulation") for record in records)
         print(f"Generated {len(records)} safe synthetic {scenario.value} telemetry records.")
+        print(f"Scenario: {scenario.value}")
+        print(f"Sensor ID: {args.sensor_id}")
         print(f"Simulation only: {simulation}")
         return 0
 
@@ -871,8 +896,30 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "demo":
-        result = run_mvp_demo()
-        print(f"ROCKS MVP demo passed: {result}")
+        try:
+            if args.scenario is not None:
+                scenario_value = normalize_demo_scenario(args.scenario)
+            else:
+                scenario_value = None
+            result = run_demo_sequence(
+                mode=args.mode,
+                scenario=scenario_value,
+                count=args.count,
+                sensor_id=args.sensor_id,
+            )
+        except ValueError as exc:
+            print(f"ROCKS demo error: {exc}", file=sys.stderr)
+            return 2
+
+        print("Synthetic ROCKS demo pipeline")
+        print(f"Mode: {result['mode']}")
+        print(f"Scenarios: {', '.join(result['scenarios'])}")
+        print(f"Sensor ID: {result['sensor_id']}")
+        print(f"Telemetry generated: {result['records_generated']}")
+        print(f"Alerts created: {result['alerts']}")
+        if result.get("investigation_id"):
+            print(f"Investigation ID: {result['investigation_id']}")
+        print(f"Simulation only: {result['synthetic']} | No real network traffic: {result['no_real_network_activity']}")
         return 0
 
     print(f"ROCKS Fleet {__version__}")

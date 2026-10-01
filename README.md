@@ -76,11 +76,16 @@ The simulator generates telemetry only; it never sends packets, scans networks, 
 
 ```bash
 rocks demo
+rocks demo --mode normal
+rocks demo --mode anomaly
+rocks demo --mode full
+rocks simulate --scenario high_traffic --count 5
+rocks simulate --scenario deauth_related_simulation
 ```
 
-The demo creates 20 historical baseline records in a temporary SQLite database, trains the local model, compares normal traffic with a synthetic high-traffic spike, and creates a HIGH investigation alert. ML needs historical baseline data before it becomes ready. An anomaly indicates behavior that differs from the learned baseline; it does not prove an attack.
+The demo uses a temporary SQLite database so it never touches production data. It runs a safe synthetic workflow across simulation, telemetry, Hub ingestion, detection, alerting, and investigation. The default `full` mode exercises `normal`, `high_traffic`, `reconnaissance_like`, `dns_anomaly`, `reconnect_storm`, `deauth_related_simulation`, and `mixed_anomalous` in a compact sequence. Each suspicious record is intentionally marked with `simulation=true`, and the synthetic deauth example remains clearly labeled as `DEAUTH_RELATED_SIMULATION` rather than real Wi-Fi activity.
 
-Optional scenario generation is available with `rocks simulate normal`, `rocks simulate anomaly`, and `rocks simulate mixed`. Dashboard alerts are investigation-only. Optional email notifications are disabled by default; ROCKS continues storing alerts if SMTP is unavailable.
+Optional scenario generation is available with `rocks simulate normal`, `rocks simulate anomaly`, and `rocks simulate mixed`, plus the explicit scenario names above. Dashboard alerts are investigation-only. Optional email notifications are disabled by default; ROCKS continues storing alerts if SMTP is unavailable.
 
 ## Live Edge
 
