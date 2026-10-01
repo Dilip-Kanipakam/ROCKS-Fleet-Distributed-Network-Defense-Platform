@@ -34,6 +34,7 @@ class EdgeAgentConfig:
     api_key: str = ""
     send_interval_seconds: float = 5.0
     buffer_limit: int = 10_000
+    max_active_flows: int = 10_000
     telemetry_window_seconds: float = 60.0
     database_path: Path | None = None
     buffer_path: Path | None = None
@@ -50,7 +51,7 @@ class EdgeAgent:
         self.storage = TelemetryStorage(config.database_path)
         self.buffer = TelemetryBuffer(config.buffer_path)
         self.feature_aggregator = FeatureAggregator(config.telemetry_window_seconds, config.buffer_limit)
-        self.flow_tracker = FlowTracker()
+        self.flow_tracker = FlowTracker(max_active_flows=config.max_active_flows)
         self._packets: list[PacketMetadata] = []
         self._flow_source_macs: dict[tuple[str, str, int, int, str], str] = {}
         self._lock = threading.Lock()

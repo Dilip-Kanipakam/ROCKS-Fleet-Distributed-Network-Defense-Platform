@@ -34,6 +34,7 @@ def build_default_config() -> dict[str, Any]:
             "hub_url": "",
             "send_interval_seconds": 5,
             "buffer_limit": 10000,
+            "max_active_flows": 10000,
         },
         "hub": {
             "enabled": False,
@@ -160,12 +161,14 @@ def get_edge_agent_config(config_path: str | Path | None = None) -> dict[str, An
     if not isinstance(edge, dict) or not isinstance(telemetry, dict):
         raise ValueError("edge and telemetry configuration sections must be mappings")
     raw_buffer_limit = edge.get("buffer_limit", 10_000)
+    raw_max_active_flows = edge.get("max_active_flows", 10_000)
     raw_window_seconds = telemetry.get("window_seconds", 60)
     try:
         buffer_limit = int(raw_buffer_limit)
+        max_active_flows = int(raw_max_active_flows)
         telemetry_window_seconds = float(raw_window_seconds)
     except (TypeError, ValueError) as exc:
-        raise ValueError("edge.buffer_limit and telemetry.window_seconds must be positive numbers") from exc
+        raise ValueError("edge buffer and telemetry settings must be positive numbers") from exc
     if (
         isinstance(raw_buffer_limit, bool)
         or buffer_limit <= 0
@@ -174,6 +177,8 @@ def get_edge_agent_config(config_path: str | Path | None = None) -> dict[str, An
         raise ValueError("edge.buffer_limit must be a positive integer")
     if isinstance(raw_window_seconds, bool) or not math.isfinite(telemetry_window_seconds) or telemetry_window_seconds <= 0:
         raise ValueError("telemetry.window_seconds must be a positive finite number")
+    if isinstance(raw_max_active_flows, bool) or max_active_flows <= 0 or raw_max_active_flows != max_active_flows:
+        raise ValueError("edge.max_active_flows must be a positive integer")
     return {
         "sensor_id": os.getenv("ROCKS_SENSOR_ID", str(edge.get("sensor_id", "ROCKS-EDGE-01"))),
         "interface": os.getenv("ROCKS_INTERFACE", str(edge.get("interface", ""))),
@@ -181,5 +186,6 @@ def get_edge_agent_config(config_path: str | Path | None = None) -> dict[str, An
         "api_key": os.getenv("ROCKS_API_KEY", str(config.get("hub", {}).get("api_key", ""))),
         "send_interval_seconds": float(edge.get("send_interval_seconds", 5)),
         "buffer_limit": buffer_limit,
+        "max_active_flows": max_active_flows,
         "telemetry_window_seconds": telemetry_window_seconds,
     }

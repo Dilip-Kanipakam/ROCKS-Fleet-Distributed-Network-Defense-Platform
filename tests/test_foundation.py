@@ -13,11 +13,11 @@ from rocks.paths import config_dir, data_dir, log_dir, project_root
 
 
 def test_package_import():
-    assert __version__ == "0.1.0"
+    assert __version__ == "1.1.0.dev0"
 
 
 def test_version_constant():
-    assert __version__ == "0.1.0"
+    assert __version__ == "1.1.0.dev0"
 
 
 def test_cli_execution_status():

@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.required = False
 
     subparsers.add_parser("status", help="show current installation status")
+    subparsers.add_parser("version", help="show ROCKS Fleet version (alias for --version)")
     subparsers.add_parser("config", help="show the active configuration path")
     subparsers.add_parser("logs", help="show logging status")
     subparsers.add_parser("test", help="run the foundation test command")
@@ -509,6 +510,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ROCKS Fleet {__version__}")
         return 0
 
+    if args.command == "version":
+        print(f"ROCKS Fleet {__version__}")
+        return 0
+
     if args.command == "status":
         print("ROCKS Fleet foundation is installed.")
         print("No Edge or Hub services are running yet.")
@@ -526,11 +531,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     if args.command == "logs":
-        print("ROCKS logging is not implemented yet.")
+        print("ROCKS logs are emitted through the configured Python logger and systemd journal when services run.")
+        print("Use: journalctl -u rocks-edge.service -u rocks-hub.service")
         return 0
 
     if args.command == "test":
-        print("ROCKS Fleet foundation tests passed.")
+        print("ROCKS CLI smoke test command passed; it does not run pytest.")
+        print("Use: .venv/bin/python -m pytest -q")
         return 0
 
     if args.command == "health":
@@ -813,7 +820,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Generated {len(records)} safe synthetic {scenario.value} telemetry records.")
         print(f"Scenario: {scenario.value}")
         print(f"Sensor ID: {args.sensor_id}")
-        print(f"Simulation only: {simulation}")
+        print("Synthetic data: yes")
+        print(f"Explicit simulation marker: {'yes' if simulation else 'no'}")
+        print("No live packets or external attack activity were generated.")
         return 0
 
     if args.command == "alerts":

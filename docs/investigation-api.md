@@ -9,7 +9,7 @@ They share the URL prefix but have distinct HTTP methods and purposes. A case ma
 
 ## Authentication
 
-All endpoints require the existing Hub bearer API key in `Authorization`. The key must belong to a registered edge sensor. Missing or invalid credentials return `401 Unauthorized`.
+The device evidence query at `GET /api/v1/investigations?device_id=...` accepts a registered Edge bearer key only when the request includes that key's matching `sensor_id`; fleet-wide evidence queries require the configured administrator Hub key. Case creation, case retrieval, timelines, events, notes, actions, and lifecycle changes require the administrator Hub key in `Authorization`. Missing or invalid credentials return `401 Unauthorized`; a valid but cross-scope Edge request returns `403 Forbidden`.
 
 ## Case lifecycle
 

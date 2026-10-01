@@ -48,7 +48,7 @@ ROCKS Hub
 
 ## Quick Start
 
-The project requires Python 3.10 or newer. From the repository root:
+The project requires Python 3.10 or newer. The post-v1.0 development line reports `1.1.0.dev0`; the immutable release remains tagged `v1.0.0`. From the repository root:
 
 ```bash
 git clone <repository-url>
@@ -97,7 +97,9 @@ Linux is the documented target because live packet observation and the optional 
 - Runtime YAML is normally `config/config.yaml`; `ROCKS_CONFIG_PATH` selects another file.
 - Edge storage defaults to `data/rocks-edge.db` and `data/rocks-edge-buffer.db`; Hub storage defaults to `data/rocks-hub.db`. Paths can be set under `storage`.
 - Hub and dashboard configuration controls bind host/port, dashboard enablement, administrator username/password hash, and signed session secret.
+- Registered Edge keys are scoped to their own sensor for Hub reads; configure `ROCKS_ADMIN_API_KEY` for fleet-wide administrative Hub API queries. The dashboard uses its separate signed administrator session.
 - Detection thresholds, telemetry windows, Edge buffer limits, liveness, and health freshness are configurable in YAML. Environment overrides exist for selected Edge, Hub, dashboard, detection, and email settings.
+- Edge flow tracking is bounded by `edge.max_active_flows` (default 10,000); when full, the oldest inactive flow is evicted deterministically.
 - ML is optional and local. It needs historical behavior-summary data before its baseline is useful.
 
 Never commit real passwords, API keys, session secrets, SMTP usernames, SMTP passwords, or other credentials. Keep runtime configuration and `.env` files owner-only. Use `ROCKS_SESSION_COOKIE_SECURE=true` when serving the dashboard over HTTPS.
@@ -120,6 +122,8 @@ rocks edge capture --interface <interface>
 ```
 
 Live capture must be limited to networks and interfaces the operator is authorized to monitor. It does not attack, inject, disconnect, or block traffic.
+
+The Edge key can ingest and query only its own sensor scope. Fleet-wide Hub queries require the configured administrator API key; dashboard users authenticate with the separate signed session.
 
 ## Hub and API
 
@@ -153,7 +157,7 @@ The Hub serves the Command Center at `/dashboard`. It requires a separate signed
 
 ## Simulator and Demo
 
-The simulator and demo use local synthetic records. They do not send packets, scan networks, require a live interface, or attack external systems. The demo uses a temporary SQLite database and exercises generation, storage, detection, alerts, and investigation without modifying production data:
+The simulator and demo use local synthetic records. They do not send packets, scan networks, require a live interface, or attack external systems. CLI output distinguishes synthetic data from the explicit simulation marker used by simulated deauthentication records. The demo uses a temporary SQLite database and exercises generation, storage, detection, alerts, and investigation without modifying production data:
 
 ```bash
 rocks demo --mode normal
@@ -206,6 +210,6 @@ Installation, permissions, database paths, SPAN/TAP connectivity, and service op
 
 ## Project Status
 
-The current repository includes the Edge observation pipeline, local storage and buffering, authenticated Hub ingestion, local ML baseline support, explainable detection, alerting, authenticated dashboard investigations, safe demo/simulation workflows, security hardening, and end-to-end tests. Automatic network blocking or disconnection is intentionally outside the project scope.
+The current repository includes the Edge observation pipeline, local storage and buffering, authenticated Hub ingestion, scoped Edge/admin Hub authorization, local ML baseline support, explainable detection, alerting, authenticated dashboard investigations, safe demo/simulation workflows, security hardening, and end-to-end tests. Automatic network blocking or disconnection is intentionally outside the project scope.
 
 For development workflow and project structure, see [docs/development.md](docs/development.md). For the data flow, see [docs/architecture.md](docs/architecture.md).

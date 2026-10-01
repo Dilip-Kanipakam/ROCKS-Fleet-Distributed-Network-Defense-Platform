@@ -20,6 +20,8 @@ hub:
   port: 8000
   url: ""
   api_key: ""
+  admin_api_key: ""
+  # Optional fleet-wide Hub API key for administrative/query clients.
   timeout_seconds: 10
   edge_liveness_timeout_seconds: 60
 

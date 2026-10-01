@@ -53,10 +53,13 @@ class FlowRecord:
 class FlowTracker:
     """Track active five-tuple flows with time-based expiration."""
 
-    def __init__(self, expiration_seconds: float = 300.0) -> None:
+    def __init__(self, expiration_seconds: float = 300.0, max_active_flows: int = 10_000) -> None:
         if expiration_seconds <= 0:
             raise ValueError("expiration_seconds must be greater than zero")
+        if isinstance(max_active_flows, bool) or not isinstance(max_active_flows, int) or max_active_flows <= 0:
+            raise ValueError("max_active_flows must be a positive integer")
         self.expiration_seconds = expiration_seconds
+        self.max_active_flows = max_active_flows
         self._flows: dict[FlowKey, FlowRecord] = {}
         self._logger = configure_logging()
 
@@ -81,6 +84,11 @@ class FlowTracker:
         )
         record = self._flows.get(key)
         if record is None:
+            self.expire(metadata.timestamp)
+            if len(self._flows) >= self.max_active_flows:
+                oldest_key = min(self._flows, key=lambda item: (self._flows[item].last_seen, repr(item)))
+                evicted = self._flows.pop(oldest_key)
+                self._logger.warning("Edge flow capacity reached; evicted oldest flow %s", oldest_key)
             record = FlowRecord(
                 source_ip=key.source_ip,
                 destination_ip=key.destination_ip,

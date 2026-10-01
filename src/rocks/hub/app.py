@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import re
 import ipaddress
+import hmac
 from pathlib import Path
 from typing import Any
 
@@ -113,11 +114,31 @@ def create_app(database_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bearer API key required")
         # The sensor ID is part of the validated telemetry body; this dependency only verifies format.
 
-    def authenticate_query(authorization: str | None) -> None:
+    def authenticate_query(authorization: str | None) -> str | None:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
         token = authorization[7:].strip()
-        if not token or not service.registry.authenticate_api_key(token):
+        if not token:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        if hub_config.admin_api_key and hmac.compare_digest(token, hub_config.admin_api_key):
+            return None
+        sensor_id = service.registry.identify_api_key(token)
+        if sensor_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        return sensor_id
+
+    def sensor_scope(scope: str | None, requested_sensor_id: str | None) -> str | None:
+        if scope is None:
+            return requested_sensor_id
+        if requested_sensor_id is not None and requested_sensor_id != scope:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sensor access is limited to its own records")
+        return scope
+
+    def authenticate_admin(authorization: str | None) -> None:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        token = authorization[7:].strip()
+        if not hub_config.admin_api_key or not token or not hmac.compare_digest(token, hub_config.admin_api_key):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     @app.get("/api/v1/health", response_model=HealthResponse)
@@ -144,7 +165,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
         event_type: str | None = Query(default=None, min_length=1, max_length=32),
         limit: int = Query(default=100, ge=1, le=1000),
     ) -> list[TelemetryRecord]:
-        authenticate_query(authorization)
+        scope = authenticate_query(authorization)
+        sensor_id = sensor_scope(scope, sensor_id)
         if sensor_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", sensor_id):
             raise HTTPException(status_code=422, detail="Invalid sensor_id")
         if device_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@|+-]{0,127}", device_id):
@@ -165,7 +187,8 @@ def create_app(database_path: str | None = None) -> FastAPI:
         telemetry_id: str | None = Query(default=None, min_length=1, max_length=128),
         limit: int = Query(default=50, ge=1, le=100),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        scope = authenticate_query(authorization)
+        sensor_id = sensor_scope(scope, sensor_id)
         if device_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@|+-]{0,127}", device_id):
             raise HTTPException(status_code=422, detail="Invalid device_id")
         if sensor_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", sensor_id):
@@ -201,11 +224,14 @@ def create_app(database_path: str | None = None) -> FastAPI:
         end: str | None = Query(default=None, min_length=1, max_length=64),
         sensor_id: str | None = Query(default=None, min_length=1, max_length=128),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        scope = authenticate_query(authorization)
+        if scope is not None and sensor_id is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sensor ID is required for Edge investigations")
         try:
             device_id = validate_identifier(device_id, field="device_id")
             if sensor_id is not None:
                 sensor_id = validate_identifier(sensor_id, field="sensor_id")
+                sensor_id = sensor_scope(scope, sensor_id)
             start_at, end_at = resolve_time_range(start, end)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -226,7 +252,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         data: dict[str, Any],
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         allowed = {"title", "description", "device_id", "sensor_id"}
         if set(data) - allowed:
             raise HTTPException(status_code=422, detail="Investigation contains unsupported fields")
@@ -253,7 +279,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         investigation_id: str,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         try:
             investigation_id = validate_investigation_id(investigation_id)
         except ValueError as exc:
@@ -269,7 +295,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         data: dict[str, Any],
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         try:
             investigation_id = validate_investigation_id(investigation_id)
             event = validate_case_event(data)
@@ -288,7 +314,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         investigation_id: str,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         try:
             investigation_id = validate_investigation_id(investigation_id)
         except ValueError as exc:
@@ -304,7 +330,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         data: dict[str, Any],
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         try:
             investigation_id = validate_investigation_id(investigation_id)
             note = validate_analyst_note(data, author="hub-api")
@@ -321,7 +347,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         investigation_id: str,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         try:
             investigation_id = validate_investigation_id(investigation_id)
         except ValueError as exc:
@@ -337,7 +363,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         data: dict[str, Any],
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         try:
             investigation_id = validate_investigation_id(investigation_id)
             action = validate_analyst_action(data, author="hub-api")
@@ -354,7 +380,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         investigation_id: str,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         try:
             investigation_id = validate_investigation_id(investigation_id)
         except ValueError as exc:
@@ -370,7 +396,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         data: dict[str, Any],
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         try:
             investigation_id = validate_investigation_id(investigation_id)
         except ValueError as exc:
@@ -404,7 +430,7 @@ def create_app(database_path: str | None = None) -> FastAPI:
         investigation_id: str,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        authenticate_query(authorization)
+        authenticate_admin(authorization)
         try:
             investigation_id = validate_investigation_id(investigation_id)
         except ValueError as exc:
@@ -419,24 +445,30 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     @app.get("/api/v1/telemetry/{telemetry_id}", response_model=TelemetryResponse)
     def get_telemetry(telemetry_id: str = APIPath(..., min_length=1, max_length=128), authorization: str | None = Header(default=None)) -> TelemetryRecord:
-        authenticate_query(authorization)
+        scope = authenticate_query(authorization)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", telemetry_id):
             raise HTTPException(status_code=422, detail="Invalid telemetry_id")
         record = service.storage.get_telemetry(telemetry_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Telemetry record not found")
+        if scope is not None and record.sensor_id != scope:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sensor access is limited to its own records")
         return record
 
     @app.get("/api/v1/edges", response_model=list[EdgeResponse])
     def list_edges(authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
-        authenticate_query(authorization)
-        return [edge.to_dict() for edge in service.edges()]
+        scope = authenticate_query(authorization)
+        edges = service.edges()
+        if scope is not None:
+            edges = [edge for edge in edges if edge.sensor_id == scope]
+        return [edge.to_dict() for edge in edges]
 
     @app.get("/api/v1/edges/{sensor_id}", response_model=EdgeResponse)
     def get_edge(sensor_id: str = APIPath(..., min_length=1, max_length=64), authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        authenticate_query(authorization)
+        scope = authenticate_query(authorization)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", sensor_id):
             raise HTTPException(status_code=422, detail="Invalid sensor_id")
+        sensor_id = sensor_scope(scope, sensor_id) or sensor_id
         edge = service.registry.get(sensor_id)
         if edge is None:
             raise HTTPException(status_code=404, detail="Edge sensor not found")
@@ -444,7 +476,9 @@ def create_app(database_path: str | None = None) -> FastAPI:
 
     @app.get("/api/v1/stats", response_model=StatsResponse)
     def stats(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        authenticate_query(authorization)
+        scope = authenticate_query(authorization)
+        if scope is not None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Administrator access is required for fleet statistics")
         return service.stats()
 
     return app

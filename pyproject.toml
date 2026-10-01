@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rocks-fleet"
-version = "0.1.0"
+version = "1.1.0.dev0"
 description = "ROCKS Fleet foundation project"
 readme = "README.md"
 requires-python = ">=3.10"

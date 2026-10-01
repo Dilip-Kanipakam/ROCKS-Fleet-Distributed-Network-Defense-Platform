@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 
 import pytest
@@ -123,11 +124,12 @@ def investigation_record(sensor_id: str, device_id: str, timestamp: str, *, even
 
 
 def investigation_client(tmp_path):
+    os.environ["ROCKS_ADMIN_API_KEY"] = "test-admin-key"
     app = create_app(str(tmp_path / "investigation.db"))
     service = app.state.hub_service
     _, api_key = service.registry.register("SENSOR-A")
     _, second_key = service.registry.register("SENSOR-B")
-    return TestClient(app), service, api_key, second_key
+    return TestClient(app), service, "test-admin-key", api_key
 
 
 def test_investigation_api_filters_exact_device_sensor_and_time_in_order(tmp_path):
@@ -145,13 +147,13 @@ def test_investigation_api_filters_exact_device_sensor_and_time_in_order(tmp_pat
         service.storage.insert_telemetry(record)
 
     headers = {"Authorization": f"Bearer {api_key}"}
-    query = {"device_id": device, "start": "2026-01-01T11:00:00Z", "end": "2026-01-01T12:02:00Z"}
+    query = {"device_id": device, "sensor_id": "SENSOR-A", "start": "2026-01-01T11:00:00Z", "end": "2026-01-01T12:02:00Z"}
     response = client.get("/api/v1/investigations", params=query, headers=headers)
     assert response.status_code == 200
     body = response.json()
     assert body["device"]["device_id"] == device
     assert [event["timestamp"] for event in body["events"]] == [
-        "2026-01-01T12:00:00Z", "2026-01-01T12:01:00Z", "2026-01-01T12:02:00Z"
+        "2026-01-01T12:00:00Z", "2026-01-01T12:02:00Z"
     ]
     assert {event["device_id"] for event in body["events"]} == {device}
     assert all(event["event_type"] == "BEHAVIOR_SUMMARY" for event in body["events"])
@@ -172,27 +174,27 @@ def test_investigation_api_auth_validation_empty_and_bounded_windows(tmp_path):
     assert client.get(endpoint, params={"device_id": "DEVICE-A"}).status_code == 401
     assert client.get(endpoint, params={"device_id": "DEVICE-A"}, headers={"Authorization": "Bearer invalid"}).status_code == 401
 
-    empty = client.get(endpoint, params={"device_id": "DEVICE-A"}, headers=headers)
+    empty = client.get(endpoint, params={"device_id": "DEVICE-A", "sensor_id": "SENSOR-A"}, headers=headers)
     assert empty.status_code == 200
     assert empty.json()["events"] == []
     default_range = empty.json()["time_range"]
     assert 23 * 3600 < (datetime.fromisoformat(default_range["end"].replace("Z", "+00:00")) - datetime.fromisoformat(default_range["start"].replace("Z", "+00:00"))).total_seconds() <= 24 * 3600
 
-    assert client.get(endpoint, params={"device_id": "bad/id"}, headers=headers).status_code == 422
+    assert client.get(endpoint, params={"device_id": "bad/id", "sensor_id": "SENSOR-A"}, headers=headers).status_code == 422
     assert client.get(endpoint, params={"device_id": "DEVICE-A", "sensor_id": "bad/id"}, headers=headers).status_code == 422
-    assert client.get(endpoint, params={"device_id": "DEVICE-A", "start": "yesterday"}, headers=headers).status_code == 422
-    assert client.get(endpoint, params={"device_id": "DEVICE-A", "start": "2026-01-01T00:00:00"}, headers=headers).status_code == 422
-    assert client.get(endpoint, params={"device_id": "DEVICE-A", "start": "2026-01-02T00:00:00Z", "end": "2026-01-01T00:00:00Z"}, headers=headers).status_code == 422
+    assert client.get(endpoint, params={"device_id": "DEVICE-A", "sensor_id": "SENSOR-A", "start": "yesterday"}, headers=headers).status_code == 422
+    assert client.get(endpoint, params={"device_id": "DEVICE-A", "sensor_id": "SENSOR-A", "start": "2026-01-01T00:00:00"}, headers=headers).status_code == 422
+    assert client.get(endpoint, params={"device_id": "DEVICE-A", "sensor_id": "SENSOR-A", "start": "2026-01-02T00:00:00Z", "end": "2026-01-01T00:00:00Z"}, headers=headers).status_code == 422
 
     seven_days = client.get(
         endpoint,
-        params={"device_id": "DEVICE-A", "start": "2026-01-01T00:00:00Z", "end": "2026-01-08T00:00:00Z"},
+        params={"device_id": "DEVICE-A", "sensor_id": "SENSOR-A", "start": "2026-01-01T00:00:00Z", "end": "2026-01-08T00:00:00Z"},
         headers=headers,
     )
     assert seven_days.status_code == 200
     too_wide = client.get(
         endpoint,
-        params={"device_id": "DEVICE-A", "start": "2026-01-01T00:00:00Z", "end": "2026-01-08T00:00:01Z"},
+        params={"device_id": "DEVICE-A", "sensor_id": "SENSOR-A", "start": "2026-01-01T00:00:00Z", "end": "2026-01-08T00:00:01Z"},
         headers=headers,
     )
     assert too_wide.status_code == 422
@@ -240,7 +242,7 @@ def test_investigation_includes_detection_ml_alert_lifecycle_and_simulation_evid
 
     response = client.get(
         "/api/v1/investigations",
-        params={"device_id": "DEVICE-A", "start": "2026-01-01T11:59:00Z", "end": "2026-01-01T12:03:00Z"},
+        params={"device_id": "DEVICE-A", "sensor_id": "SENSOR-A", "start": "2026-01-01T11:59:00Z", "end": "2026-01-01T12:03:00Z"},
         headers={"Authorization": f"Bearer {api_key}"},
     )
     assert response.status_code == 200

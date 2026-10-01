@@ -63,11 +63,11 @@ SQLite insert and Edge liveness update
 Queries, investigations, dashboard projections
 ```
 
-The Hub registers sensors with hashed API keys, validates incoming telemetry, prevents duplicate record insertion, stores records in indexed SQLite tables, and exposes health, Edge, telemetry, statistics, and investigation APIs.
+The Hub registers sensors with hashed API keys, validates incoming telemetry, prevents duplicate record insertion, stores records in indexed SQLite tables, and exposes health, Edge, telemetry, statistics, and investigation APIs. Edge bearer keys are scoped to their own sensor for reads; fleet-wide Hub queries use the optional administrator API key, while the dashboard uses its signed session.
 
 ## Detection and assessment
 
-`DetectionEngine` evaluates behavior-summary, DNS, reconnect, and explicitly evidenced deauthentication-related metadata against configured thresholds. Results include triggered rule IDs, severity, reasons, counters, thresholds, and simulation state. The existing `MLService` can add a time-aware baseline anomaly score and retention priority when enabled and trained.
+`DetectionEngine` evaluates behavior-summary, DNS, reconnect, and explicitly evidenced deauthentication-related metadata against configured thresholds. Results include triggered rule IDs, severity, reasons, counters, thresholds, and simulation state. The existing `MLService` can add a time-aware baseline anomaly score and retention priority when enabled and trained; training uses the storage layer's bounded 1,000-record sample.
 
 The assessment is not an attack classifier. Terms such as “reconnaissance-like” describe metadata patterns and require administrator review. No detection path changes network state.
 

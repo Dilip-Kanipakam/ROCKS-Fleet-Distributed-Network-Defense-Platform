@@ -61,7 +61,7 @@ def test_authentication_ingestion_duplicate_and_queries(tmp_path):
     assert len(listed.json()) == 1
     fetched = client.get(f"/api/v1/telemetry/{data['record_id']}", headers=headers)
     assert fetched.status_code == 200
-    assert client.get("/api/v1/stats", headers=headers).json()["telemetry_records"] == 1
+    assert client.get("/api/v1/stats", headers=headers).status_code == 403
     assert client.get("/api/v1/telemetry", params={"limit": 1001}, headers=headers).status_code == 422
 
 
@@ -158,8 +158,9 @@ def test_query_endpoints_require_registered_edge_key(tmp_path):
         invalid = client.get(endpoint, headers={"Authorization": "Bearer not-a-valid-key"})
         assert invalid.status_code == 401
         assert invalid.json()["detail"] == "Invalid credentials"
-        valid = client.get(endpoint, headers={"Authorization": f"Bearer {key}"})
-        assert valid.status_code == 200
+        params = {"sensor_id": "EDGE-01"} if endpoint == "/api/v1/telemetry" else {}
+        valid = client.get(endpoint, params=params, headers={"Authorization": f"Bearer {key}"})
+        assert valid.status_code == (403 if endpoint == "/api/v1/stats" else 200)
 
 
 def test_hub_accepts_existing_edge_event_types(tmp_path):

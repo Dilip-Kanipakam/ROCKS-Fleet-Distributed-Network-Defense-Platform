@@ -24,6 +24,7 @@ A single Linux host can run an Edge sensor, Hub, SQLite databases, and the dashb
 - Hub bind host/port and Hub SQLite path
 - dashboard administrator username/password and session secret
 - Edge-to-Hub registration key
+- optional fleet-wide `ROCKS_ADMIN_API_KEY` for administrative Hub API clients
 - telemetry window, send interval, and buffer limit
 
 Start the combined process with:
@@ -46,6 +47,8 @@ For multiple observation points:
 
 The Hub must be reachable from each Edge over the configured URL. The Edge buffer retains records during temporary Hub outages, subject to its configured capacity.
 
+Edge bearer keys are scoped to the registering sensor for Hub reads and ingestion. They do not grant fleet-wide telemetry, investigation, or statistics access. Use the separate signed dashboard session or the optional administrator API key for fleet-wide operations.
+
 ## Observation point and permissions
 
 An ordinary switch access port does not expose all campus or organizational traffic. Use an institution-approved managed-switch SPAN/port-mirror destination or TAP. Capture only networks and interfaces the operator is authorized to monitor.
@@ -59,6 +62,8 @@ Runtime configuration is normally `config/config.yaml`; `config/config.example.y
 - `data/rocks-edge.db`
 - `data/rocks-edge-buffer.db`
 - `data/rocks-hub.db`
+
+Edge flow state is bounded by `edge.max_active_flows` (default 10,000). When the limit is reached, the oldest flow is evicted so memory use cannot grow without bound. ML training uses at most 1,000 stored behavior-summary records per training run. Telemetry retention and deletion remain manual deployment policy; investigation evidence is not automatically removed.
 
 Protect configuration, `.env`, database backups, and generated service files. Do not commit passwords, API keys, dashboard session secrets, or SMTP credentials. Use `ROCKS_SESSION_COOKIE_SECURE=true` when the dashboard is served over HTTPS.
 

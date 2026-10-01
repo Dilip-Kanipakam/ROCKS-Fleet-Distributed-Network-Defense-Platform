@@ -9,6 +9,9 @@ from rocks.ml.analysis import AnalysisResult, MODEL_VERSION, analyze_behavior_su
 from rocks.ml.baseline import BaselineModel
 
 
+MAX_TRAINING_RECORDS = 1_000
+
+
 class MLService:
     def __init__(
         self,
@@ -25,7 +28,7 @@ class MLService:
         )
 
     def train(self) -> int:
-        records = self.storage.query_telemetry(event_type="BEHAVIOR_SUMMARY", limit=100000)
+        records = self.storage.query_telemetry(event_type="BEHAVIOR_SUMMARY", limit=MAX_TRAINING_RECORDS)
         count = self.model.train(records)
         if count >= self.model.minimum_samples:
             self.model.save()

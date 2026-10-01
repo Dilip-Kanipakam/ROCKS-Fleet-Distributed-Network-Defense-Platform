@@ -37,6 +37,8 @@ The default URL is `http://127.0.0.1:8000/dashboard`. `rocks hub run` starts the
 
 Login at `/dashboard/login`. Dashboard authentication uses a signed session cookie and is separate from the bearer API keys used by Edge sensors.
 
+State-changing dashboard requests validate same-origin `Origin` or `Referer` headers when supplied. Cross-origin mutations are rejected; read-only GET requests remain available to authenticated sessions.
+
 ## Features
 
 - **Fleet overview:** Hub health, Edge online/stale/unknown status, recent telemetry, alerts, investigations, storage, and ML state.

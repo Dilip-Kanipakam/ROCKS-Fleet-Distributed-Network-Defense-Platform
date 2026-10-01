@@ -28,6 +28,8 @@ rocks --help
 
 The package declares Python `>=3.10`. `requirements.txt` mirrors the repository environment; the editable install is the normal setup path.
 
+The current post-release development line is `1.1.0.dev0`; the released `v1.0.0` tag is not rewritten.
+
 ## Testing and validation
 
 Run the complete suite:
@@ -61,6 +63,8 @@ rocks simulate high_traffic --count 1
 ```
 
 These commands do not require live network traffic. The full suite covers foundation/setup, Edge observation, telemetry, buffering, Hub authentication/storage, detection, ML, alerts, dashboard sessions and views, investigations, simulator/demo behavior, and end-to-end flow.
+
+Hub authorization tests cover sensor-scoped Edge reads and fleet-wide administrator queries. Flow capacity, malformed login bodies, same-origin dashboard mutations, synthetic labeling, and the bounded ML training sample are covered by `tests/test_post_release.py`.
 
 ## Adding tests
 

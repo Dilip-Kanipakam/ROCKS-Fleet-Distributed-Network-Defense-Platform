@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Path as APIPath, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -71,20 +72,37 @@ class DashboardRoutes:
         if not self.auth_config.configured or not is_authenticated(request, self.auth_config):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Dashboard authentication required")
 
+    def _mutation_auth(self, request: Request, *, require_session: bool = True) -> None:
+        if require_session:
+            self._api_auth(request)
+        candidate = request.headers.get("origin") or request.headers.get("referer")
+        if not candidate:
+            return
+        parsed = urlsplit(candidate)
+        expected = (request.url.scheme, request.url.hostname, request.url.port)
+        actual = (parsed.scheme, parsed.hostname, parsed.port)
+        if actual != expected:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-origin dashboard mutation rejected")
+
     def login_page(self, request: Request, error: str | None = None):
         if self.auth_config.configured and is_authenticated(request, self.auth_config):
             return RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
         return self.templates.TemplateResponse(request=request, name="login.html", context={"error": error, "configured": self.auth_config.configured})
 
     async def login(self, request: Request):
-        username, password = parse_login_body(await request.body())
+        self._mutation_auth(request, require_session=False)
+        try:
+            username, password = parse_login_body(await request.body())
+        except ValueError as exc:
+            return self.templates.TemplateResponse(request=request, name="login.html", context={"error": str(exc), "configured": self.auth_config.configured}, status_code=422)
         if not self.auth_config.configured or username != self.auth_config.username or not verify_password(password, self.auth_config.password_hash):
             return self.templates.TemplateResponse(request=request, name="login.html", context={"error": "Invalid credentials.", "configured": self.auth_config.configured}, status_code=401)
         response = RedirectResponse("/dashboard", status_code=status.HTTP_303_SEE_OTHER)
         response.set_cookie("rocks_dashboard_session", create_session(username, self.auth_config.session_secret, self.auth_config.session_max_age), max_age=self.auth_config.session_max_age, httponly=True, secure=self.auth_config.cookie_secure, samesite="lax")
         return response
 
-    def logout(self):
+    def logout(self, request: Request):
+        self._mutation_auth(request)
         response = RedirectResponse("/dashboard/login", status_code=status.HTTP_303_SEE_OTHER)
         response.delete_cookie("rocks_dashboard_session")
         return response
@@ -251,7 +269,7 @@ class DashboardRoutes:
         return JSONResponse(self.service.alerts(limit))
 
     def acknowledge_alert(self, request: Request, alert_id: str = APIPath(..., min_length=1, max_length=128)):
-        self._api_auth(request)
+        self._mutation_auth(request)
         alert = self.service.storage.get_alert(alert_id)
         if alert is None:
             raise HTTPException(status_code=404, detail="Alert not found")
@@ -262,7 +280,7 @@ class DashboardRoutes:
         return JSONResponse({"alert_id": updated.alert_id, "status": updated.status, "message": "Alert acknowledged."})
 
     def resolve_alert(self, request: Request, alert_id: str = APIPath(..., min_length=1, max_length=128)):
-        self._api_auth(request)
+        self._mutation_auth(request)
         alert = self.service.storage.get_alert(alert_id)
         if alert is None:
             raise HTTPException(status_code=404, detail="Alert not found")
@@ -273,7 +291,7 @@ class DashboardRoutes:
         return JSONResponse({"alert_id": updated.alert_id, "status": updated.status, "message": "Alert resolved."})
 
     async def create_investigation(self, request: Request):
-        self._api_auth(request)
+        self._mutation_auth(request)
         try:
             data = await request.json()
         except (ValueError, UnicodeDecodeError):
@@ -302,7 +320,7 @@ class DashboardRoutes:
         return JSONResponse(case, status_code=status.HTTP_201_CREATED)
 
     async def update_investigation(self, request: Request, investigation_id: str):
-        self._api_auth(request)
+        self._mutation_auth(request)
         try:
             investigation_id = validate_investigation_id(investigation_id)
             data = await request.json()
@@ -331,7 +349,7 @@ class DashboardRoutes:
         return JSONResponse(case)
 
     def close_investigation(self, request: Request, investigation_id: str):
-        self._api_auth(request)
+        self._mutation_auth(request)
         try:
             investigation_id = validate_investigation_id(investigation_id)
         except ValueError as exc:
@@ -354,7 +372,7 @@ class DashboardRoutes:
         return author or "dashboard-admin"
 
     async def add_investigation_note(self, request: Request, investigation_id: str):
-        self._api_auth(request)
+        self._mutation_auth(request)
         try:
             investigation_id = validate_investigation_id(investigation_id)
             data = await request.json()
@@ -383,7 +401,7 @@ class DashboardRoutes:
         return JSONResponse({"investigation_id": investigation_id, "notes": notes})
 
     async def add_investigation_action(self, request: Request, investigation_id: str):
-        self._api_auth(request)
+        self._mutation_auth(request)
         try:
             investigation_id = validate_investigation_id(investigation_id)
             data = await request.json()

@@ -86,7 +86,11 @@ def is_authenticated(request: Request, config: DashboardAuthConfig) -> bool:
 
 
 def parse_login_body(body: bytes) -> tuple[str, str]:
-    values = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+    try:
+        decoded = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Login body must be valid UTF-8") from exc
+    values = parse_qs(decoded, keep_blank_values=True)
     return values.get("username", [""])[0], values.get("password", [""])[0]
 
 

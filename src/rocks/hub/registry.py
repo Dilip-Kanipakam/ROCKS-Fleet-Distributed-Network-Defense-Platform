@@ -25,6 +25,14 @@ class EdgeRegistry:
             return False
         return any(self.authenticate(edge.sensor_id, api_key) for edge in self.storage.list_edges())
 
+    def identify_api_key(self, api_key: str) -> str | None:
+        if not api_key:
+            return None
+        for edge in self.storage.list_edges():
+            if self.authenticate(edge.sensor_id, api_key):
+                return edge.sensor_id
+        return None
+
     def get(self, sensor_id: str) -> EdgeInfo | None:
         return self.storage.get_edge(sensor_id)
 
