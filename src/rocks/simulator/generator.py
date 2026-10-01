@@ -7,6 +7,9 @@ from rocks.edge.features import TrafficFeatures
 from rocks.edge.telemetry import TelemetryRecord, behavior_summary_telemetry, dns_telemetry, reconnect_telemetry
 
 
+MAX_GENERATED_COUNT = 1000
+
+
 class Scenario(str, Enum):
     NORMAL = "normal"
     HIGH_TRAFFIC = "high_traffic"
@@ -25,8 +28,8 @@ def generate_records(
     start: datetime | None = None,
 ) -> list[TelemetryRecord]:
     scenario = Scenario(scenario)
-    if count < 1:
-        raise ValueError("count must be greater than zero")
+    if count < 1 or count > MAX_GENERATED_COUNT:
+        raise ValueError(f"count must be between 1 and {MAX_GENERATED_COUNT}")
     start = start or datetime(2026, 1, 5, 9, tzinfo=timezone.utc)
     return [_record(scenario, index, sensor_id, start + timedelta(minutes=index)) for index in range(count)]
 

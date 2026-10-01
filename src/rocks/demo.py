@@ -11,7 +11,10 @@ from rocks.alerts.engine import AlertEngine
 from rocks.detection.engine import DetectionEngine
 from rocks.hub.storage import HubStorage
 from rocks.ml.service import MLService
-from rocks.simulator.generator import Scenario, generate_records
+from rocks.simulator.generator import MAX_GENERATED_COUNT, Scenario, generate_records
+
+
+MAX_DEMO_COUNT = MAX_GENERATED_COUNT
 
 
 class DemoMode(str, Enum):
@@ -106,8 +109,8 @@ def run_demo_sequence(
     normalized_mode = normalize_demo_mode(mode)
     normalized_scenario = normalize_demo_scenario(scenario)
     scenarios = [normalized_scenario] if normalized_scenario is not None else _demo_sequence(normalized_mode)
-    if count < 1:
-        raise ValueError("count must be greater than zero")
+    if count < 1 or count > MAX_DEMO_COUNT:
+        raise ValueError(f"count must be between 1 and {MAX_DEMO_COUNT}")
 
     with TemporaryDirectory(prefix="rocks-demo-") as directory:
         storage = HubStorage(Path(directory) / "demo.db")

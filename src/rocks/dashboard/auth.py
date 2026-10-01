@@ -45,14 +45,20 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 
 def create_session(username: str, secret: str, max_age: int) -> str:
-    payload = {"username": username, "expires": int(time.time()) + max_age}
+    if not secret:
+        raise ValueError("session secret cannot be empty")
+    payload = {
+        "sid": secrets.token_urlsafe(32),
+        "username": username,
+        "expires": int(time.time()) + max_age,
+    }
     encoded = _encode(payload)
     signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
     return f"{encoded}.{_b64encode(signature)}"
 
 
 def verify_session(value: str | None, secret: str) -> str | None:
-    if not value or "." not in value:
+    if not value or "." not in value or len(value) > 4096:
         return None
     encoded, signature = value.rsplit(".", 1)
     expected = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
@@ -64,6 +70,9 @@ def verify_session(value: str | None, secret: str) -> str | None:
     if not hmac.compare_digest(supplied, expected):
         return None
     if not isinstance(payload, dict):
+        return None
+    session_id = payload.get("sid")
+    if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 128:
         return None
     expires = payload.get("expires")
     if isinstance(expires, bool) or not isinstance(expires, int) or expires <= int(time.time()):

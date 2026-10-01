@@ -70,6 +70,19 @@ This repository currently contains the ROCKS Fleet foundation and first Edge obs
 
 Chunks 1 through 6 provide the Edge, telemetry, Hub, ML, and read-only Command Center layers. Chunk 7 integrates safe synthetic scenarios, local investigation alerts, and an end-to-end MVP demonstration. Automatic response remains intentionally unimplemented.
 
+## ROCKS Security Model
+
+ROCKS is intentionally a metadata-first, local-first monitoring platform. The trust boundaries are:
+
+- Internet or untrusted network -> Edge observation point -> local structured telemetry
+- Hub API -> authentication + validation -> SQLite storage
+- Dashboard browser -> authenticated session -> read-only investigation views
+- CLI administrator -> local config or service control -> deployment configuration
+
+The platform does not inspect packet payloads by default, does not automatically block or quarantine devices, and does not depend on real-time attack confirmation to record telemetry. Detection output is an investigation aid, not proof of malicious activity. ALERT does not imply automatic prevention, and DETECTION does not imply attack confirmation.
+
+Authentication is enforced on the Hub API using bearer API keys, and the dashboard uses a signed session cookie with a required secret. Values such as device IDs, sensor IDs, investigation IDs, timestamps, query limits, and telemetry payload keys are validated and rejected when malformed or out of bounds. The demo and simulator remain synthetic-only and use a temporary local SQLite file so they never write to production data. Known limitations: the project does not implement a full rate-limiting subsystem, no automatic traffic blocking is performed, and deployment assumptions still require a correctly configured mirror/TAP or managed-switch SPAN session.
+
 ## Quick Demo
 
 The simulator generates telemetry only; it never sends packets, scans networks, or performs attacks.
