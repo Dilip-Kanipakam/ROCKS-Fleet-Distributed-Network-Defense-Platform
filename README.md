@@ -1,112 +1,54 @@
 # ROCKS Fleet
 
-ROCKS Fleet is a low-cost, distributed, self-hosted network security monitoring platform designed for Linux-based deployments. The project is intentionally metadata-first: it focuses on observing network metadata and flow features rather than storing packet payloads.
+**Detect. Analyze. Alert. Restore.**
 
-## Architecture overview
+ROCKS Fleet is a Linux-first, low-cost network security monitoring platform for schools, colleges, small organizations, and lab or hackathon deployments. It observes authorized network metadata, builds local telemetry, detects unusual behavior, and gives administrators evidence for investigation. It is metadata-first: the normal pipeline stores flow and behavior information, not packet payloads.
 
-The planned architecture is:
+ROCKS is an observation and decision-support system. It does **not** automatically disconnect, block, quarantine, or isolate users or devices. Any network restriction or recovery action is performed externally by an authorized administrator using the organization’s existing network controls.
 
+## Problem
+
+Small organizations often need useful network visibility without expensive appliances, cloud dependencies, or deep packet storage. ROCKS provides a local-first path from an approved SPAN/TAP observation point to bounded telemetry, explainable rules, optional local ML baselines, alerts, and investigation views.
+
+## Architecture
+
+```text
 Network
-  ↓
-Managed Switch SPAN / Port Mirroring
-  ↓
-ROCKS Edge
-  ↓
-Network metadata / flow features
-  ↓
-Structured telemetry
-  ↓
+   |
+   v
+Authorized SPAN / TAP
+   |
+   v
+ROCKS Edge Sensor
+   |
+   v
+Metadata and flow telemetry
+   |
+   v
 ROCKS Hub
-  ↓
-Storage + Detection + ML
-  ↓
-Command Center / Dashboard
-
-## ROCKS Edge
-
-ROCKS Edge is the observation layer responsible for reading authorized mirrored traffic, extracting metadata and flow features, buffering local data, and forwarding structured telemetry to the Hub.
-
-## ROCKS Hub
-
-ROCKS Hub is the centralized collection and analysis layer. It receives authenticated telemetry, stores it, runs the local ML baseline, and serves the API and Command Center dashboard.
-
-## Command Center
-
-The Command Center is the read-only administrator dashboard for investigation, monitoring, and operational awareness. It is served by the existing Hub process at `/dashboard`.
-
-## Metadata-first approach
-
-ROCKS is designed around metadata and flow features instead of packet payload storage. This keeps the system more privacy-conscious, reduces storage overhead, and better matches the project's low-cost, self-hosted monitoring goals.
-
-## Future ML purpose
-
-Machine learning is planned for a later chunk and will be used to:
-
-- learn time-dependent network traffic baselines
-- detect unusual traffic spikes
-- generate anomaly scores
-- help prioritize telemetry retention to reduce storage use
-
-ML is local and baseline-oriented. It does not prove that an attack occurred.
-
-## Current development status
-
-This repository currently contains the ROCKS Fleet foundation and first Edge observation pipeline:
-
-- project structure
-- Python package metadata
-- configurable CLI
-- configuration and logging scaffolding
-- Scapy-based Edge packet metadata parsing
-- bounded five-tuple flow tracking and expiration
-- in-memory time-window traffic features
-- non-root synthetic Edge pipeline demonstration
-- versioned telemetry records with connection, DNS, reconnect, and behavior-summary events
-- SQLite local telemetry storage and a persistent offline buffer
-- central ROCKS Hub ingestion API with authenticated Edge registration
-- local Hub-side time-aware baseline learning and retention prioritization
-- safe synthetic simulator and local investigation alerts
-- documentation and test baseline
-
-Chunks 1 through 6 provide the Edge, telemetry, Hub, ML, and read-only Command Center layers. Chunk 7 integrates safe synthetic scenarios, local investigation alerts, and an end-to-end MVP demonstration. Automatic response remains intentionally unimplemented.
-
-## ROCKS Security Model
-
-ROCKS is intentionally a metadata-first, local-first monitoring platform. The trust boundaries are:
-
-- Internet or untrusted network -> Edge observation point -> local structured telemetry
-- Hub API -> authentication + validation -> SQLite storage
-- Dashboard browser -> authenticated session -> read-only investigation views
-- CLI administrator -> local config or service control -> deployment configuration
-
-The platform does not inspect packet payloads by default, does not automatically block or quarantine devices, and does not depend on real-time attack confirmation to record telemetry. Detection output is an investigation aid, not proof of malicious activity. ALERT does not imply automatic prevention, and DETECTION does not imply attack confirmation.
-
-Authentication is enforced on the Hub API using bearer API keys, and the dashboard uses a signed session cookie with a required secret. Values such as device IDs, sensor IDs, investigation IDs, timestamps, query limits, and telemetry payload keys are validated and rejected when malformed or out of bounds. The demo and simulator remain synthetic-only and use a temporary local SQLite file so they never write to production data. Known limitations: the project does not implement a full rate-limiting subsystem, no automatic traffic blocking is performed, and deployment assumptions still require a correctly configured mirror/TAP or managed-switch SPAN session.
-
-## Quick Demo
-
-The simulator generates telemetry only; it never sends packets, scans networks, or performs attacks.
-
-```bash
-rocks demo
-rocks demo --mode normal
-rocks demo --mode anomaly
-rocks demo --mode full
-rocks simulate --scenario high_traffic --count 5
-rocks simulate --scenario deauth_related_simulation
+   |
+   +--> SQLite storage
+   +--> Feature and detection layer
+   +--> Risk assessment
+   +--> Alert engine
+              |
+              v
+       Dashboard / Investigation
 ```
 
-The demo uses a temporary SQLite database so it never touches production data. It runs a safe synthetic workflow across simulation, telemetry, Hub ingestion, detection, alerting, and investigation. The default `full` mode exercises `normal`, `high_traffic`, `reconnaissance_like`, `dns_anomaly`, `reconnect_storm`, `deauth_related_simulation`, and `mixed_anomalous` in a compact sequence. Each suspicious record is intentionally marked with `simulation=true`, and the synthetic deauth example remains clearly labeled as `DEAUTH_RELATED_SIMULATION` rather than real Wi-Fi activity.
+### Components
 
-Optional scenario generation is available with `rocks simulate normal`, `rocks simulate anomaly`, and `rocks simulate mixed`, plus the explicit scenario names above. Dashboard alerts are investigation-only. Optional email notifications are disabled by default; ROCKS continues storing alerts if SMTP is unavailable.
+- **Edge Sensor** observes authorized traffic, parses Ethernet/IP/TCP/UDP/ICMP/DNS metadata, tracks flows, calculates features, stores local telemetry, buffers unsent records, and forwards authenticated telemetry to the Hub.
+- **ROCKS Hub** authenticates registered Edge sensors, validates telemetry, stores records in SQLite, runs detection and optional ML analysis, creates alerts, and serves the API and dashboard.
+- **Feature and detection layer** calculates traffic rate, packet rate, connection activity, unique destinations/ports, DNS and reconnect indicators, and deterministic rule results.
+- **Risk assessment** combines rule evidence with the existing ML anomaly and retention signals. These are investigation aids, not attack probabilities or proof of compromise.
+- **Alert engine** persists potential anomalies with severity, evidence, and lifecycle state. Email notifications are optional and disabled by default.
+- **Dashboard / Investigation** provides authenticated operational summaries, telemetry context, alerts, cases, analyst notes, and actions. Analyst actions are records only; they do not change network state.
+- **Administrator** decides whether any external network restriction, remediation, or recovery is appropriate.
 
-## Live Edge
+## Quick Start
 
-Run the operational Edge agent with `rocks edge run --interface <interface> --hub-url <url> --api-key <key> --sensor-id <id>`. Use `rocks edge run --dry-run` for a safe local check. A managed switch must be configured to mirror selected ports or VLAN traffic to the Edge through a SPAN destination port; an ordinary switch connection does not expose all traffic.
-
-## Setup wizard
-
-Install from the repository root, then start the interactive setup:
+The project requires Python 3.10 or newer. From the repository root:
 
 ```bash
 git clone <repository-url>
@@ -114,135 +56,156 @@ cd Project-RocksFleet
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-rocks setup
 ```
 
-Choose one of the prompted deployment modes:
-
-- **Edge Sensor** configures a stable sensor ID, an available interface, the Hub URL, an Edge API key, and its send interval. On the Hub, first register the sensor with `rocks hub edge register --sensor-id ROCKS-EDGE-01`; the generated key is shown once and must be entered into the Edge setup.
-- **Hub / Command Center** configures the Hub, SQLite database path, and dashboard administrator. The password is entered without echo, hashed with the existing password hasher, and never included in the setup summary. The session secret is generated cryptographically when one is not already configured.
-- **Edge + Hub** configures both on one machine and registers the Edge identity in the local Hub database, storing only its hashed key there.
-
-The generated `config/config.yaml` is the runtime YAML configuration; it is ignored by Git and written with owner-only permissions. `ROCKS_CONFIG_PATH` can select another YAML path, and existing environment-variable overrides continue to take precedence. A non-interactive invocation must provide `--mode` and all required settings; `--force` is required to update an existing config without an interactive confirmation. Validate an existing configuration without writing it with `rocks setup --check`.
-
-After setup, validate the software configuration and synthetic Edge pipeline:
+Create a runtime configuration with the setup wizard, or copy `config/config.example.yaml` to `config/config.yaml` and fill in the required values. The wizard is preferred because it validates values and writes owner-only configuration permissions:
 
 ```bash
+rocks setup
 rocks setup --check
-rocks test
-rocks edge test
-rocks hub status
-rocks dashboard status
 ```
 
-For broad network visibility, connect the selected Edge interface to an appropriate managed-switch SPAN/port-mirroring session or a TAP. Connecting a normal switch access port does not expose all campus traffic. ROCKS setup configures software only; it does not configure the physical switch, SPAN session, TAP, router, firewall, or network topology.
-
-Start the Hub/Command Center with `rocks dashboard run` (or `rocks hub run`). Start an Edge sensor with `rocks edge run`. Edge capture may require the operating-system privileges needed for packet observation.
-
-## Linux Services
-
-For continuous operation on a Linux host with systemd, complete setup and software checks first. Service installation is separate from `rocks setup` and explicitly requires administrator approval:
-
-```bash
-rocks setup
-rocks test
-rocks service install
-rocks service status
-```
-
-`rocks service install` installs and starts only the units required by the configured mode. Edge mode installs `rocks-edge.service`; Hub mode installs `rocks-hub.service`; all-in-one installs both. The Hub unit runs the existing combined Hub and dashboard application once. Units use the current Python interpreter, application directory, and config path. They run under the invoking administrator's account; Edge is granted `CAP_NET_RAW` for passive capture. No credentials are copied into the unit files. The local config must remain readable only by its owner.
-
-System service installation and removal need root. Review the requested operation, then run `sudo rocks service install` or `sudo rocks service uninstall`. Start, stop, restart, and status use the configured units:
-
-```bash
-rocks service start
-rocks service stop
-rocks service restart
-rocks service status
-rocks service uninstall
-```
-
-Inspect service output and startup failures with journald:
-
-```bash
-journalctl -u rocks-edge.service -f
-journalctl -u rocks-hub.service -f
-```
-
-To inspect unit generation without installing anything, use `rocks service generate --output-dir /tmp/rocks-units`; this works without systemd. Service management does not configure a switch SPAN session, TAP, router, firewall, or network topology. Broad Edge visibility still requires an appropriate observation point.
-
-## Health and Diagnostics
-
-Run a concise infrastructure check or request detailed diagnostics:
-
-```bash
-rocks health
-rocks health check
-rocks health verbose
-```
-
-Health validates the generated config, reports configured systemd service states, checks the Hub health endpoint and dashboard login route where applicable, performs read-only Hub/Edge SQLite probes, checks the Edge buffer, and compares the latest telemetry with the configured freshness window (`health.telemetry_freshness_seconds`, default 300 seconds). Verbose output includes selected non-secret paths, sensor ID, endpoint, capped record counts, telemetry age, and recovery hints. It never prints API keys, passwords, password hashes, session secrets, or SMTP credentials.
-
-`HEALTHY` means all applicable required checks passed. `DEGRADED` means at least one applicable check is warning or a required service state is unknown. `UNHEALTHY` means at least one check reports an error. Components not configured for the deployment mode are `NOT_APPLICABLE` and do not affect overall health. Exit codes are `0` healthy, `1` degraded or unhealthy, and `2` invalid or unavailable configuration.
-
-Service state and telemetry health are separate: an active Edge or Hub process can still have stale or absent telemetry. For a stopped or failed service, check `rocks service status` and the matching `journalctl -u rocks-edge.service` or `journalctl -u rocks-hub.service`. For an unavailable Hub API, check Hub service state, bind URL/port, and connectivity. For stale telemetry, check Edge delivery and verify the configured interface receives traffic from a SPAN/port-mirror session or TAP. ROCKS health diagnoses ROCKS infrastructure only; a healthy result does not mean the monitored network is healthy. Installing ROCKS does not itself provide campus-wide visibility.
-
-## Email Notifications
-
-Email is optional and disabled by default. Configure the existing `email` section in the owner-only `config/config.yaml`, or use `ROCKS_EMAIL_ENABLED=true` with `ROCKS_SMTP_HOST`, `ROCKS_SMTP_PORT`, `ROCKS_SMTP_USERNAME`, `ROCKS_SMTP_PASSWORD`, `ROCKS_SMTP_FROM`, and `ROCKS_SMTP_TO`. Environment values override YAML; with systemd, the generated unit optionally reads the local ignored `.env` file. Keep that file owner-only (`chmod 600 .env`) and never put real credentials in tracked files. For interactive shell use, export the variables in that shell. STARTTLS on port 587 is the default. Implicit TLS is available with `use_ssl: true` and `starttls: false`; certificate verification stays enabled.
-
-By default, only existing `HIGH` alerts trigger messages. Set `minimum_severity: WARNING` to include both existing `WARNING` and `HIGH` severities. Each newly inserted alert receives at most one bounded SMTP attempt. Views, acknowledgements, resolutions, and duplicate alert processing never resend. Email failure records `FAILED` with a safe reason code, leaves the alert `OPEN`, and does not interrupt alert storage. SMTP timeout defaults to five seconds and is capped at 30 seconds.
-
-Test delivery only when explicitly requested:
-
-```bash
-rocks alerts email-test
-```
-
-This sends a test message only when notifications are enabled and does not create an alert. The dashboard shows `Sent`, `Failed`, `Not sent`, or `Not configured`; it does not expose SMTP credentials. Troubleshoot with `journalctl -u rocks-hub.service`. Email is not required for telemetry analysis or alert creation.
-
-## Detection and Risk Evidence
-
-ROCKS evaluates deterministic metadata rules for `HIGH_TRAFFIC`, `CONNECTION_BURST`, `RECONNAISSANCE_LIKE`, `DNS_ANOMALY`, `RECONNECT_STORM`, and explicitly evidenced `DEAUTH_RELATED` telemetry. Thresholds live under `detection` in `config/config.yaml`; defaults are starting points, not universal values, and should be tuned to each deployment's normal traffic and observation window. `ROCKS_DETECTION_*` environment variables can override individual thresholds. `high_traffic_rate` is observed bytes/second; `connection_burst_rate` and `dns_request_rate` are counts/second over `window_seconds`; destination thresholds are unique IPs/ports in a behavior-summary window; `dns_failure_rate` is the failed/request ratio from available DNS telemetry; reconnect and deauth thresholds are explicit event counts.
-
-Each assessment stores the triggered rule IDs, severity, explanation, and relevant counters/thresholds. `HIGH_TRAFFIC`, `CONNECTION_BURST`, and `DNS_ANOMALY` are `WARNING`; `RECONNAISSANCE_LIKE`, `RECONNECT_STORM`, and evidence-backed real `DEAUTH_RELATED` are `HIGH`; simulated deauth is `WARNING` and visibly marked as simulated. The overall severity is the highest triggered rule severity, promoted to `HIGH` by the existing ML anomaly threshold or `HIGH` retention priority. When the existing ML baseline is ready, its anomaly score and retention priority are reported separately; no new probability or independent combined score is invented. Deterministic rules continue to run without ML. Existing alert IDs still correlate one potential anomaly per telemetry record, and the existing lifecycle and one-time email notification behavior remain unchanged.
-
-`rocks detection status` displays active policy thresholds. `rocks detection test` evaluates safe synthetic examples only; it sends no packets and performs no attacks. The deauthentication example is explicitly marked simulation-only. Real deauthentication-related detection requires explicit 802.11 management-frame evidence; no live parser currently emits that evidence. Reconnaissance-like behavior does not prove a port scan or attack. Thresholds and anomaly scores are investigation aids, not measured accuracy or attack probabilities.
-
-## Python virtual environment
-
-Create a virtual environment from the project root:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-## Install the project
-
-```bash
-pip install -e .
-```
-
-## Run the CLI
+Run safe checks and the test suite:
 
 ```bash
 rocks --help
-rocks --version
-rocks status
-rocks config
-rocks logs
-rocks test
-rocks dashboard status
+rocks edge test
+rocks detection test
+rocks demo --mode normal
+.venv/bin/python -m pytest -q
+.venv/bin/python -m compileall src tests
+```
+
+Start the combined Hub and dashboard after configuring a Hub deployment:
+
+```bash
 rocks dashboard run
 ```
 
-## Run tests
+The dashboard is served at `http://127.0.0.1:8000/dashboard` by default. Configure administrator credentials before using it. See [dashboard/README.md](dashboard/README.md).
+
+## Installation
+
+`pyproject.toml` is the source of truth for packaging and declares runtime dependencies including FastAPI, Jinja2, PyYAML, Scapy, Uvicorn, joblib, and scikit-learn. The editable install also exposes the `rocks` CLI. The optional `test` dependency provides the HTTP test client; `requirements.txt` contains the complete environment used by this repository.
+
+Linux is the documented target because live packet observation and the optional systemd service workflow are Linux-oriented. Live capture may require appropriate privileges. A normal switch access port does not provide broad visibility; use an authorized managed-switch SPAN/port-mirror session or TAP.
+
+## Configuration
+
+- **`config/config.example.yaml`** documents YAML settings for deployment mode, Edge, Hub, telemetry, health, detection, storage, ML, dashboard, alerts, and email.
+- **`.env.example`** lists environment variables for logging, Hub delivery, and optional SMTP notifications.
+- Runtime YAML is normally `config/config.yaml`; `ROCKS_CONFIG_PATH` selects another file.
+- Edge storage defaults to `data/rocks-edge.db` and `data/rocks-edge-buffer.db`; Hub storage defaults to `data/rocks-hub.db`. Paths can be set under `storage`.
+- Hub and dashboard configuration controls bind host/port, dashboard enablement, administrator username/password hash, and signed session secret.
+- Detection thresholds, telemetry windows, Edge buffer limits, liveness, and health freshness are configurable in YAML. Environment overrides exist for selected Edge, Hub, dashboard, detection, and email settings.
+- ML is optional and local. It needs historical behavior-summary data before its baseline is useful.
+
+Never commit real passwords, API keys, session secrets, SMTP usernames, SMTP passwords, or other credentials. Keep runtime configuration and `.env` files owner-only. Use `ROCKS_SESSION_COOKIE_SECURE=true` when serving the dashboard over HTTPS.
+
+## Edge Sensor
+
+The Edge path is observation-only. It parses metadata such as addresses, ports, protocols, packet lengths, DNS-related indicators, and timestamps; tracks bounded flows; calculates packet and traffic rates; counts unique destination IPs and ports; identifies devices from observed source identity where possible; creates connection, DNS, and behavior-summary telemetry; and buffers records locally when the Hub is unavailable.
+
+Useful commands:
 
 ```bash
-pytest
+rocks edge --help
+rocks edge status
+rocks edge test
+rocks edge telemetry test
+rocks edge storage status
+rocks edge run --dry-run
+rocks edge run --interface <interface> --hub-url <url> --api-key <key> --sensor-id <id>
+rocks edge capture --interface <interface>
 ```
 
-## Repository purpose
+Live capture must be limited to networks and interfaces the operator is authorized to monitor. It does not attack, inject, disconnect, or block traffic.
 
-This repository is the initial foundation for ROCKS Fleet and should remain modular so that future chunks can be added without restructuring the project.
+## Hub and API
+
+Register a sensor and keep the generated API key secret:
+
+```bash
+rocks hub edge register --sensor-id ROCKS-EDGE-01
+rocks hub edge list
+rocks hub run
+```
+
+The Hub stores telemetry and exposes these implemented paths:
+
+- `GET /api/v1/health`
+- `POST /api/v1/telemetry`
+- `GET /api/v1/telemetry`
+- `GET /api/v1/telemetry/{telemetry_id}`
+- `GET /api/v1/telemetry/context`
+- `GET /api/v1/edges`, `GET /api/v1/edges/{sensor_id}`
+- `GET /api/v1/stats`
+- `GET/POST /api/v1/investigations`
+- `GET/PATCH /api/v1/investigations/{investigation_id}`
+- `GET/POST /api/v1/investigations/{investigation_id}/timeline`, `/events`, `/notes`, and `/actions`
+- `POST /api/v1/investigations/{investigation_id}/close`
+
+Telemetry ingestion uses the registered Edge bearer API key. Investigation and query responses contain bounded metadata and evidence; they do not enable automatic enforcement.
+
+## Dashboard
+
+The Hub serves the Command Center at `/dashboard`. It requires a separate signed administrator session, not an Edge API key. The dashboard shows fleet and health summaries, Edge freshness, telemetry, detection/ML evidence, alerts, alert lifecycle, investigation timelines, cases, notes, and analyst actions. See [dashboard/README.md](dashboard/README.md).
+
+## Simulator and Demo
+
+The simulator and demo use local synthetic records. They do not send packets, scan networks, require a live interface, or attack external systems. The demo uses a temporary SQLite database and exercises generation, storage, detection, alerts, and investigation without modifying production data:
+
+```bash
+rocks demo --mode normal
+rocks demo --mode anomaly
+rocks demo --mode full
+rocks simulate high_traffic --count 5 --sensor-id ROCKS-SIM-01
+rocks simulate deauth_related_simulation
+```
+
+Synthetic records are not real attack evidence. Scenario-specific deauthentication records are explicitly marked simulation-only; other synthetic scenarios remain synthetic even when their payload does not carry that marker.
+
+## Testing
+
+Run the full suite and the focused integration coverage with the project interpreter:
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q tests/test_integration.py
+.venv/bin/python -m compileall src tests
+```
+
+The 206-test suite covers foundation/setup, Edge parsing and buffering, telemetry, Hub authentication and storage, detection, ML, alerts, dashboard/session behavior, investigations, simulator/demo behavior, and end-to-end integration.
+
+## Security and operational boundaries
+
+ROCKS validates bounded input, authenticates Edge ingestion, uses signed dashboard sessions, avoids packet payload storage in the normal telemetry model, and redacts sensitive operational details. These controls do not replace host, network, or secret-management practices. Detection output is advisory. Administrators must operate the system only at authorized observation points and decide any external restriction or recovery action.
+
+## Deployment
+
+Use `rocks setup` for an Edge, Hub, or all-in-one configuration. A single Linux host can run Hub, dashboard, and an Edge sensor; a distributed deployment can send multiple Edge sensors to one Hub. For persistent Linux operation, the CLI also supports explicit systemd unit generation and service management:
+
+```bash
+rocks service generate --output-dir /tmp/rocks-units
+rocks service status
+```
+
+Installation, permissions, database paths, SPAN/TAP connectivity, and service operation are deployment responsibilities. See [docs/deployment.md](docs/deployment.md).
+
+## Troubleshooting
+
+- **`rocks` is not found:** activate `.venv`, or use `.venv/bin/rocks`.
+- **Dependency errors:** recreate the virtual environment and run `pip install -e .`; check that Python is 3.10+.
+- **Configuration errors:** run `rocks setup --check`; verify `ROCKS_CONFIG_PATH` and required Hub/dashboard fields.
+- **Dashboard login fails:** configure administrator username, password hash, and session secret through setup or environment variables; dashboard sessions are separate from Edge API keys.
+- **No telemetry:** check `rocks edge status`, the configured interface, the local buffer, Hub URL/API key, and the authorized SPAN/TAP feed.
+- **Capture permission errors:** use the Linux privileges required for passive observation, or start with `rocks edge test` and `rocks edge run --dry-run`.
+- **Port already in use:** pass another `--port` to `rocks hub run` or `rocks dashboard run` and keep Hub/dashboard configuration consistent.
+- **Tests fail:** run the focused test module first, then `pytest -q`; inspect the first failure and confirm the active interpreter is `.venv/bin/python`.
+- **Demo/simulator issues:** use positive bounded counts and supported scenario names from `rocks simulate --help`; these commands do not need live network access.
+
+## Project Status
+
+The current repository includes the Edge observation pipeline, local storage and buffering, authenticated Hub ingestion, local ML baseline support, explainable detection, alerting, authenticated dashboard investigations, safe demo/simulation workflows, security hardening, and end-to-end tests. Automatic network blocking or disconnection is intentionally outside the project scope.
+
+For development workflow and project structure, see [docs/development.md](docs/development.md). For the data flow, see [docs/architecture.md](docs/architecture.md).

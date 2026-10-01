@@ -1,81 +1,110 @@
-# Development plan
+# Development
 
-The project is intentionally planned in chunks so the architecture remains coherent as it grows.
+## Project structure
 
-## Chunk 1: Foundation
-
-- repository structure
-- Python package setup
-- CLI scaffolding
-- configuration skeleton
-- logging utilities
-- path management
-- basic tests and documentation
-
-## Chunk 2: ROCKS Edge capture and flow processing
-
-- network observation design
-- metadata extraction
-- flow feature generation
-- local buffering and telemetry preparation
-
-## Chunk 3: Telemetry and local storage
-
-- versioned structured telemetry format
-- local SQLite storage and indexed retrieval
-- persistent offline buffering
-- reliability and duplicate protection
-
-## Chunk 4: ROCKS Hub
-
-- FastAPI telemetry ingestion
-- central SQLite storage
-- Edge API-key authentication and registry
-- health, query, and statistics endpoints
-- bounded Edge sender using the local buffer
-
-## Chunk 5: ML baseline, anomaly scoring, and retention scoring
-
-- local time-aware baseline learning from historical behavior summaries
-- expected traffic estimation and bounded anomaly scoring
-- LOW/MEDIUM/HIGH retention prioritization
-- explicit training and lightweight inference
-- no destructive deletion or attack classification
-
-## Chunk 6: Command Center dashboard
-
-- read-only administrator dashboard
-- authenticated session-based access
-- Edge, telemetry, event, traffic, storage, and ML status views
-- bounded JSON polling for live refresh
-
-## Chunk 7: MVP integration, safe simulator, and alerting
-
-- controlled synthetic telemetry generation
-- deterministic end-to-end demonstration
-- local investigation alert persistence and dashboard display
-- no attack traffic, automatic blocking, or email by default
-
-## Chunk 24: Demo and simulation workflow
-
-The demo workflow is intentionally synthetic and operator-friendly. It runs through the existing ROCKS pipeline without touching production data or requiring a physical network interface:
-
-```bash
-rocks demo --mode normal
-rocks demo --mode anomaly
-rocks demo --mode full
-rocks simulate --scenario high_traffic --count 5
-rocks simulate --scenario reconnaissance_like
-rocks simulate --scenario deauth_related_simulation
+```text
+config/                 YAML template and runtime configuration location
+dashboard/              Dashboard documentation
+docs/                   Architecture, deployment, development, and API docs
+src/rocks/
+  edge/                 Capture, parsing, flows, features, telemetry, buffer
+  hub/                  FastAPI app, auth, registry, storage, investigations
+  detection/            Deterministic rules and assessments
+  alerts/               Alert persistence projection and optional email
+  dashboard/            Authenticated pages, APIs, templates, static assets
+  ml/                   Local baseline analysis and retention signals
+  simulator/            Bounded synthetic telemetry scenarios
+tests/                  Unit, component, dashboard, and integration tests
 ```
 
-Supported scenarios are `normal`, `high_traffic`, `reconnaissance_like`, `dns_anomaly`, `reconnect_storm`, `deauth_related_simulation`, and `mixed_anomalous`. Each scenario uses the project's existing simulator, preserves the `simulation=true` marker for synthetic events, and keeps all telemetry clearly separated from real network observations. The demo does not run scans, packet injections, deauthentication frames, firewall changes, or any other dangerous network action.
+## Development setup
 
-## Chunk 8: Integration, deployment, testing, and hardening
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+rocks --help
+```
 
-- end-to-end validation
-- deployment packaging
-- production hardening
-- operational testing and documentation updates
+The package declares Python `>=3.10`. `requirements.txt` mirrors the repository environment; the editable install is the normal setup path.
 
-Chunk 8 live Edge operation is implemented as part of the existing Edge layer: `rocks edge run`, local-first buffering, bounded Hub sending, dry-run mode, and graceful shutdown.
+## Testing and validation
+
+Run the complete suite:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+Run a focused slice while iterating:
+
+```bash
+.venv/bin/python -m pytest -q tests/test_integration.py
+.venv/bin/python -m pytest -q tests/test_edge.py tests/test_hub.py
+.venv/bin/python -m pytest -q tests/test_dashboard.py tests/test_investigation.py
+```
+
+Compile source and tests:
+
+```bash
+.venv/bin/python -m compileall src tests
+```
+
+Safe CLI checks:
+
+```bash
+rocks edge test
+rocks detection test
+rocks ml test
+rocks demo --mode normal
+rocks simulate high_traffic --count 1
+```
+
+These commands do not require live network traffic. The full suite covers foundation/setup, Edge observation, telemetry, buffering, Hub authentication/storage, detection, ML, alerts, dashboard sessions and views, investigations, simulator/demo behavior, and end-to-end flow.
+
+## Adding tests
+
+Keep tests deterministic and local. Use `tmp_path` for SQLite databases and `TestClient` with `create_app(...)` for Hub/dashboard integration. Synthetic telemetry should use the existing constructors and simulator scenarios. Do not use real network interfaces or external services in tests. Add coverage for both successful flow and bounded validation/failure behavior when changing an API or storage contract.
+
+## Coding workflow
+
+1. Identify the owning module and nearby tests.
+2. Preserve the metadata-first, local-first architecture and public API contracts.
+3. Make the smallest focused change.
+4. Run the narrowest relevant test first.
+5. Run the full suite, compileall, and `git diff --check` before review.
+6. Inspect `git status` and the diff; do not include unrelated work.
+
+Do not commit credentials or generated runtime databases. Do not use live capture or external network activity to validate synthetic features.
+
+## Useful commands
+
+```bash
+rocks status
+rocks config
+rocks health verbose
+rocks edge status
+rocks hub status
+rocks dashboard status
+rocks detection status
+rocks alerts status
+rocks ml status
+rocks service status
+rocks --help
+```
+
+For API and endpoint details, see [investigation-api.md](investigation-api.md) and the root [README.md](../README.md).
+
+## Debugging
+
+- Use `rocks health verbose` for configuration, endpoint, database, buffer, service, and telemetry-freshness diagnostics.
+- Use `rocks service status` and `journalctl -u rocks-hub.service` or `journalctl -u rocks-edge.service` for systemd startup issues.
+- Use `rocks edge run --dry-run` before live capture.
+- Inspect temporary test databases through the failing test or storage API rather than modifying tracked `data/` files.
+- For dashboard failures, verify administrator configuration and inspect the first failing focused test.
+
+ROCKS logs and diagnostics must not contain API keys, passwords, session secrets, SMTP credentials, or raw packet payloads.
+
+## Contribution workflow
+
+Keep changes scoped to the requested chunk, add or update tests for behavior changes, document new user-facing commands, and report exact validation commands. Reviewers should check architecture boundaries, authentication, bounded inputs, synthetic-only test behavior, and the absence of automatic network enforcement. Commit and push only when explicitly requested by the project owner.

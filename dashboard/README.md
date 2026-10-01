@@ -1,45 +1,91 @@
 # ROCKS Command Center
 
-The Command Center is served by the existing ROCKS Hub process. Evidence views are read-only; a small administrator workflow can create and advance investigation cases. It uses FastAPI, Jinja2 templates, CSS, and minimal vanilla JavaScript. No separate frontend server is required.
+## Overview
 
-Routes include `/dashboard/login`, `/dashboard`, `/dashboard/edges`, `/dashboard/telemetry`, `/dashboard/events`, `/dashboard/telemetry/{telemetry_id}`, `/dashboard/investigation/{device_id}`, and the authenticated JSON endpoints under `/api/v1/dashboard/`.
+The Command Center is the administrator dashboard served by the existing ROCKS Hub process. It is a local operational and investigation view built with FastAPI, Jinja2, CSS, and vanilla JavaScript. No separate frontend server is required.
 
-Alert and anomaly-event rows link to their triggering telemetry record. The detail page shows its metadata and bounded related telemetry; recent telemetry rows can open the same view. Dashboard pages and JSON routes require the administrator session, independently of the Hub query API's Edge API-key authentication.
+The dashboard is not a network enforcement console. It does not disconnect, block, quarantine, change firewall/router policy, or send investigation actions to network devices.
 
-Dashboard access uses a separate signed session cookie and administrator credentials configured through environment variables. It never reuses Edge API keys, exposes credentials, or performs network enforcement.
+## Setup and configuration
 
-The interface reports Hub health, Edge status, metadata-only telemetry, ML baseline state, potential anomalies, retention priorities, bounded traffic history, and local investigation alerts. Administrators can acknowledge or resolve an alert from the alert list once they have inspected the related telemetry. Valid lifecycle transitions are `OPEN -> ACKNOWLEDGED`, `OPEN -> RESOLVED`, and `ACKNOWLEDGED -> RESOLVED`. `RESOLVED -> ACKNOWLEDGED` and `RESOLVED -> OPEN` are rejected, and alert resolution does not imply a confirmed attack.
+Configure a Hub deployment with `rocks setup`, or provide these settings in `config/config.yaml` / environment variables:
 
-The events and alert tables include deterministic rule titles, reasons, metric evidence, existing ML anomaly signal, and an explicit `SIMULATED` marker for simulator-only deauthentication examples. Reconnaissance-like or DNS-related evidence is a prompt for investigation, not proof of a scan, attack, malware, or tunneling.
+- administrator username
+- administrator password hash
+- dashboard session secret
+- dashboard host and port
+- `ROCKS_SESSION_COOKIE_SECURE=true` when using HTTPS
 
-The alert list displays notification state (`Sent`, `Failed`, `Not sent`, or `Not configured`) without SMTP settings or credentials. Email is disabled by default and is not required for alert creation or investigation.
+Keep the configuration owner-only. Never put real passwords, session secrets, Edge API keys, or SMTP credentials in tracked files.
 
-## Device Investigation and Cases
+Check configuration and dashboard state:
 
-Use **Investigate Device** beside an alert with a device identifier to open `/dashboard/investigation/{device_id}` centered on the alert timestamp. The page uses the exact device identifier, optional sensor filter, and bounded start/end values to show the Hub's chronological metadata-first timeline. It displays only stored telemetry metadata, detection assessment evidence, ML analysis, and alert state; packet payloads and credentials are not rendered. An empty result means no matching evidence was available for that device and range. Invalid ranges and temporary storage/API errors are shown as administrator-facing messages without stack traces.
+```bash
+rocks setup --check
+rocks dashboard status
+```
 
-Dashboard pages and their case action endpoints require the existing signed administrator session. Browser requests use same-origin session authentication; they do not expose or reuse Edge API keys. Alert navigation is read-only: opening an investigation does not create, acknowledge, or resolve an alert, send email, or change network state. Existing alert lifecycle controls remain unchanged.
+## Running
 
-From a device investigation page, an administrator can create a case, inspect its timeline and status, move `OPEN` to `IN_PROGRESS`, move `IN_PROGRESS` to `RESOLVED`, then close a resolved case. The interface presents only the action valid for the current state. The Hub remains authoritative; if it rejects a transition, the page displays the returned error. Closed cases cannot be modified. No block, disconnect, quarantine, router, or firewall controls are present.
+Start the Hub and dashboard together:
 
-For an open case, the investigation page also provides append-only analyst notes and a controlled action-category form. Notes display newest first and appear in the chronological case timeline as `ANALYST_NOTE`; action records appear as `ANALYST_ACTION`. Categories are `OBSERVED`, `INVESTIGATING`, `DEVICE_REVIEWED`, `TRAFFIC_REVIEWED`, `ADMIN_ACTION_REQUIRED`, and `RESOLVED`. The `RESOLVED` action category records a note only and does not change case lifecycle state. The dashboard uses the signed-in administrator username as the note/action author. Closed cases show existing notes but do not offer note or action forms.
+```bash
+rocks dashboard run
+```
 
-Analyst actions are records only: they do not automatically enforce network controls, change alert state, send investigation email, or perform firewall/router operations. Investigation notes are limited to 2,000 characters; credential-like values and structured payload-style content are rejected. Notes/actions cannot be edited or deleted.
+The default URL is `http://127.0.0.1:8000/dashboard`. `rocks hub run` starts the same FastAPI application without the dashboard-specific command wrapper. Override the bind values with `rocks dashboard run --host <host> --port <port>`.
 
-Simulator-derived deauthentication events are labeled **SIMULATION ONLY** and are not presented as observed Wi-Fi activity. Rule names and explanations retain careful terms such as “Reconnaissance-like behavior”; evidence is not presented as a confirmed attack.
+Login at `/dashboard/login`. Dashboard authentication uses a signed session cookie and is separate from the bearer API keys used by Edge sensors.
 
-Investigation provides correlated evidence and context. It does not prove that an attack occurred.
+## Features
 
-For host-level operations, use `rocks health` or `rocks health verbose` for service state, Hub/dashboard reachability, read-only SQLite checks, Edge buffer availability, and telemetry freshness. Service status is not equivalent to telemetry flow. Troubleshoot systemd failures with `rocks service status` and `journalctl -u rocks-hub.service`; stale telemetry may require checking Edge delivery and the authorized SPAN/TAP observation path. These diagnostics do not change services or network configuration, and a healthy ROCKS installation does not assert that the monitored network is healthy.
+- **Fleet overview:** Hub health, Edge online/stale/unknown status, recent telemetry, alerts, investigations, storage, and ML state.
+- **Edge and telemetry:** bounded metadata records, event types, sensor filters, and telemetry context.
+- **Events and alerts:** deterministic rule titles, reasons, evidence, ML signals, retention priority, severity, simulation markers, and alert lifecycle.
+- **Investigation:** device timelines correlate telemetry, detection assessments, ML analysis, alerts, and case events.
+- **Cases:** administrators can create cases, advance valid lifecycle states, close resolved cases, and add append-only analyst notes/actions.
+- **Notifications:** email state is visible without exposing SMTP configuration. Email is disabled by default.
 
-Authenticated note and action APIs are available under `/api/v1/dashboard/investigations/{investigation_id}/notes` and `/api/v1/dashboard/investigations/{investigation_id}/actions`; the corresponding Hub API uses `/api/v1/investigations/{investigation_id}/notes` and `/actions` with the existing bearer-key authentication.
+Investigation evidence is advisory. A detection or alert does not prove an attack.
 
-## Fleet Overview
+## Dashboard routes and API
 
-The main Command Center summarizes registered, online, stale, and unknown Edge sensors; telemetry received in the last five minutes; open and high/critical active alerts; open investigations; and ML baseline state. Counts come from Hub SQLite records. Recent alert entries show stored severity, rule name when available, device, timestamp, and status. An alert with a device identifier links to the existing device investigation view using that alert's timestamp and sensor.
+HTML pages:
 
-Edge `ONLINE` means the Hub has seen the sensor within the configured Edge liveness timeout. `STALE` means it has been seen but is now outside that timeout. `UNKNOWN` means it has never checked in. The table separately shows the last Hub telemetry timestamp and stored telemetry count; registration alone does not imply online status.
+- `GET /dashboard/login`
+- `GET /dashboard`
+- `GET /dashboard/edges`
+- `GET /dashboard/telemetry`
+- `GET /dashboard/telemetry/{telemetry_id}`
+- `GET /dashboard/events`
+- `GET /dashboard/alerts`
+- `GET /dashboard/investigation/{device_id}`
 
-The system health section uses the existing read-only `rocks health` checks and displays their aggregate and component states without diagnostic detail fields or configuration values. It is evaluated when the dashboard page loads; dashboard data refreshes every 30 seconds using authenticated read-only endpoints. Empty sensor, alert, and telemetry collections are reported explicitly; unavailable fleet data uses a generic error message.
+Authenticated JSON routes:
 
-The Command Center is an operational summary, not a network enforcement console. Hub health and Edge freshness describe software connectivity and stored observations; they do not establish network health, attack confirmation, or prevention effectiveness. An unavailable per-Edge Hub connection signal is not inferred from registration.
+- `GET /api/v1/dashboard/summary`
+- `GET /api/v1/dashboard/edges`
+- `GET /api/v1/dashboard/telemetry`
+- `GET /api/v1/dashboard/telemetry/{telemetry_id}/context`
+- `GET /api/v1/dashboard/events`
+- `GET /api/v1/dashboard/traffic`
+- `GET /api/v1/dashboard/alerts`
+- `POST /api/v1/dashboard/alerts/{alert_id}/acknowledge`
+- `POST /api/v1/dashboard/alerts/{alert_id}/resolve`
+- `POST/PATCH /api/v1/dashboard/investigations` and `/api/v1/dashboard/investigations/{investigation_id}`
+- `POST /api/v1/dashboard/investigations/{investigation_id}/close`
+- `GET/POST /api/v1/dashboard/investigations/{investigation_id}/notes`
+- `GET/POST /api/v1/dashboard/investigations/{investigation_id}/actions`
+
+The corresponding Hub API uses bearer authentication at `/api/v1/investigations/...` for machine-to-machine investigation access.
+
+## Troubleshooting
+
+- **Login returns the login page:** verify the username, password, password hash, and session secret; run `rocks dashboard status`.
+- **Dashboard is unavailable:** check `rocks hub status`, the configured host/port, and whether another process owns the port.
+- **No Edge rows:** registration alone is not a telemetry check-in. Verify Edge delivery, API key configuration, and the SPAN/TAP observation path.
+- **No investigation evidence:** confirm the device ID, sensor filter, and time range; an empty timeline means no matching stored evidence.
+- **Storage errors:** run `rocks health verbose` and inspect the configured SQLite path and file permissions.
+- **Service startup errors:** use `rocks service status` and `journalctl -u rocks-hub.service`.
+
+Dashboard health describes ROCKS software and stored observations. It does not establish that the monitored network is healthy.

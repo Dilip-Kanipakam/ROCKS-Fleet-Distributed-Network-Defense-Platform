@@ -1,85 +1,101 @@
-# ROCKS Fleet architecture
+# ROCKS Fleet Architecture
 
-This document describes the planned architecture of ROCKS Fleet without implying that unfinished components are already implemented.
+ROCKS Fleet is a local-first monitoring and investigation platform. The implementation is a Python package with a FastAPI Hub, SQLite storage, an optional live Edge agent, deterministic detection, optional local ML, and a Hub-served dashboard.
 
-## High-level design
-
-The intended flow is:
-
-Network
-  ↓
-Managed Switch SPAN / Port Mirroring
-  ↓
-ROCKS Edge
-  ↓
-Network metadata / flow features
-  ↓
-Structured telemetry
-  ↓
-ROCKS Hub
-  ↓
-Storage + Detection + ML
-  ↓
-Command Center / Dashboard
-
-## Core responsibilities
-
-### ROCKS Edge
-
-ROCKS Edge is the observation layer. It is intended to handle network observation, extraction of metadata and flow features, local buffering, and sending structured telemetry to the Hub.
-
-### ROCKS Hub
-
-ROCKS Hub is the centralized analysis layer. It is intended to receive telemetry, store it, run detection logic, and host services that support the Command Center dashboard.
-
-### Command Center
-
-The Command Center is the administrator dashboard. It provides a safe operational interface to review detections and network posture without taking automated blocking actions.
-
-## Metadata-first design
-
-ROCKS is planned as a metadata-first system. It does not rely on packet payload storage. The design emphasis is on flow metadata, device behavior, and risk-oriented analysis rather than deep packet inspection.
-
-## Deployment model
-
-The project is designed to scale from a single Linux all-in-one deployment to a distributed deployment with multiple Edge sensors connected to one central Hub.
-
-## Current status
-
-Chunks 2 and 3 implement Edge observation, versioned metadata-only telemetry, local SQLite storage, and a persistent offline buffer.
-
-Chunk 4 adds the ROCKS Hub API as the central ingestion boundary. It validates the existing telemetry schema, authenticates registered Edge sensors with hashed API keys, stores records in a dedicated indexed SQLite database, and provides health, query, registry, and statistics endpoints. The Edge sender uses the existing local buffer and removes records only after acknowledgement.
-
-The Hub does not perform packet capture. It serves the read-only Command Center from the same FastAPI process.
-
-Chunk 5 adds the local ML layer after Hub storage:
+## High-level architecture
 
 ```text
-Telemetry
-  -> historical baseline
-  -> time-aware expected traffic
-  -> actual versus expected deviation
-  -> anomaly score
-  -> retention score and LOW/MEDIUM/HIGH storage priority
+Authorized network observation point
+          |
+          v
+      Edge Sensor
+          |
+          v
+ Metadata, flows, features
+          |
+          v
+      Telemetry
+          |
+          v
+        Hub API
+       /   |    \
+      v    v     v
+  SQLite Detection Alerts
+             |       |
+             +-------+
+                 |
+                 v
+       Dashboard / Investigation
 ```
 
-The model uses existing behavior-summary fields and time-of-day/day-of-week features. It identifies behavior that differs from the learned baseline; it does not prove that an attack occurred. A new deployment needs enough historical telemetry before the baseline is meaningful.
+The Edge observes. The Hub processes and stores. The dashboard presents evidence. An administrator, outside ROCKS, decides whether to apply any network restriction or recovery action.
 
-Chunk 6 adds the administrator-facing Command Center. It uses signed sessions, bounded read-only queries, and local Jinja2 templates. Dashboard views expose health, Edge status, telemetry metadata, analysis events, retention priorities, and traffic history without exposing credentials or enabling network enforcement.
+## Edge data flow
 
-Chunk 7 completes the local MVP integration with deterministic synthetic telemetry scenarios and a lightweight alert engine. Alerts are generated from existing ML analysis results when anomaly or retention thresholds are crossed, stored in the existing Hub database, and exposed through the read-only dashboard. They are investigation signals, not attack classifications.
+1. `PacketCapture` receives packets from an authorized interface, normally fed by a managed-switch SPAN/port mirror or TAP.
+2. `parse_packet` extracts bounded Ethernet/IP/TCP/UDP/ICMP/DNS metadata rather than packet payloads.
+3. `FlowTracker` maintains bounded five-tuple flow state and emits connection records when flows expire or are flushed.
+4. `FeatureAggregator` calculates windowed packet count, byte counts, traffic rate, packet rate, active flows, unique destinations/ports, and related counters.
+5. Telemetry constructors create versioned `CONNECTION`, `DNS`, `RECONNECT`, or `BEHAVIOR_SUMMARY` records.
+6. `TelemetryStorage` and `TelemetryBuffer` provide local persistence and offline delivery. Records are removed from the send buffer only after Hub acknowledgement.
 
-The live Edge agent in Chunk 8 composes the existing Edge modules into one process. It captures metadata from an authorized interface, creates bounded feature summaries, persists telemetry locally, buffers it durably, and sends acknowledged records to the Hub. The Hub is optional at runtime; local buffering remains the reliability boundary.
+The Edge may run without a Hub for local buffering. `--dry-run` and the synthetic Edge test do not capture live traffic.
 
-## BEHAVIOR_SUMMARY byte semantics
+## Hub processing flow
 
-Live and synthetic `BEHAVIOR_SUMMARY` records share schema version `1.0`. Directional counters are relative to the summarized source IP / `device_id`:
+```text
+POST /api/v1/telemetry
+          |
+          v
+Bearer API-key authentication
+          |
+          v
+Schema, identifier, timestamp, payload validation
+          |
+          v
+SQLite insert and Edge liveness update
+          |
+          +--> deterministic DetectionEngine
+          +--> optional MLService analysis
+          +--> AlertEngine and optional email notification
+          |
+          v
+Queries, investigations, dashboard projections
+```
 
-- `bytes_sent`: observed packet lengths whose IPv4 source is the summarized source (traffic from that source toward destinations).
-- `bytes_received`: observed packet lengths whose IPv4 destination is the summarized source (traffic from destinations toward that source).
+The Hub registers sensors with hashed API keys, validates incoming telemetry, prevents duplicate record insertion, stores records in indexed SQLite tables, and exposes health, Edge, telemetry, statistics, and investigation APIs.
 
-Direction is derived from source and destination IP, not packet order. The live agent emits one summary per observed source IP in the window so multiple devices are not mixed into one set of byte counters. Return traffic in the same window is counted as `bytes_received` for that source.
+## Detection and assessment
 
-`dns_request_count` is the number of DNS-related packets in the scoped window. `dns_failure_count`, `reconnect_count`, and `connection_failure_count` remain 0 on the live path unless a caller supplies observed values; the parser does not invent DNS failures or reconnects from payload contents.
+`DetectionEngine` evaluates behavior-summary, DNS, reconnect, and explicitly evidenced deauthentication-related metadata against configured thresholds. Results include triggered rule IDs, severity, reasons, counters, thresholds, and simulation state. The existing `MLService` can add a time-aware baseline anomaly score and retention priority when enabled and trained.
 
-ML continues to use `actual_traffic = bytes_sent + bytes_received` on these fields.
+The assessment is not an attack classifier. Terms such as “reconnaissance-like” describe metadata patterns and require administrator review. No detection path changes network state.
+
+## Alert flow
+
+`AlertEngine` creates a stable alert for a triggered rule or configured ML signal. `HubStorage` persists the alert with telemetry ID, sensor, device, timestamp, severity, evidence, and lifecycle fields. The dashboard can acknowledge or resolve alerts. Optional email notification is bounded and disabled by default; an SMTP failure does not prevent alert storage.
+
+## Investigation flow
+
+Investigation views correlate:
+
+- stored telemetry metadata
+- detection assessments
+- ML analysis records
+- alert state and lifecycle events
+- investigation cases and case events
+- append-only analyst notes and actions
+
+The Hub exposes `/api/v1/investigations/...`; the dashboard exposes the corresponding authenticated `/api/v1/dashboard/investigations/...` routes. Case state changes and analyst records are persisted in SQLite. They do not invoke firewall, router, isolation, or device-control operations.
+
+## Dashboard flow
+
+The dashboard is mounted in the Hub process. Browser pages and JSON projections require a signed administrator session. The dashboard service reads bounded Hub storage projections for fleet summary, Edge status, telemetry, events, alerts, health, traffic, and investigations. Edge API keys are never reused as dashboard credentials.
+
+## Storage boundaries
+
+Edge SQLite stores local telemetry and its delivery buffer. Hub SQLite stores registered sensors, telemetry, ML analysis, detection assessments, alerts, investigations, and investigation events. SQLite WAL mode and bounded queries support the local-first deployment model. Retention and backups remain deployment responsibilities.
+
+## Safety boundary
+
+ROCKS is designed for authorized defensive monitoring. It does not send attack traffic, inject packets, automatically block or disconnect devices, or claim that a healthy ROCKS process proves network health. Synthetic demo scenarios use temporary local storage and do not touch real interfaces.
