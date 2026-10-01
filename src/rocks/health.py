@@ -15,7 +15,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 import yaml
 
-from rocks.config import get_buffer_path, get_config_path, get_hub_path, get_storage_path, load_config
+from rocks.config import get_buffer_path, get_config_path, get_hub_path, get_storage_path, load_config, validate_positive_integer
 from rocks.paths import project_root
 from rocks.service_manager import EDGE_UNIT, HUB_UNIT, ServiceManager, ServiceManagerError
 
@@ -277,6 +277,7 @@ class HealthChecker:
             buffer_limit = edge.get("buffer_limit", 10_000)
             if isinstance(buffer_limit, bool) or not isinstance(buffer_limit, int) or buffer_limit <= 0:
                 raise ValueError("edge.buffer_limit must be a positive integer")
+            validate_positive_integer(edge.get("max_active_flows", 10_000), field="edge.max_active_flows")
             window_seconds = config["telemetry"].get("window_seconds", 60)
             if isinstance(window_seconds, bool) or not isinstance(window_seconds, (int, float)) or not math.isfinite(window_seconds) or window_seconds <= 0:
                 raise ValueError("telemetry.window_seconds must be a positive finite number")

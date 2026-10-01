@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
+import socket
 
 import pytest
 from fastapi.testclient import TestClient
+import yaml
 
 from rocks import __version__
 from rocks.cli import main
@@ -13,6 +16,7 @@ from rocks.edge.flow import FlowTracker
 from rocks.edge.parser import PacketMetadata
 from rocks.edge.telemetry import behavior_summary_telemetry, telemetry_to_dict
 from rocks.hub.app import create_app
+from rocks.health import HealthChecker, HealthStatus
 from rocks.ml.service import MAX_TRAINING_RECORDS, MLService
 from rocks.simulator.generator import generate_records
 
@@ -58,6 +62,14 @@ def test_edge_keys_are_sensor_scoped_and_admin_key_is_fleet_scoped(tmp_path, mon
     edge_b_record_id = client.get("/api/v1/telemetry", params={"sensor_id": "EDGE-B"}, headers={"Authorization": f"Bearer {key_b}"}).json()[0]["record_id"]
     assert client.get(f"/api/v1/telemetry/{edge_b_record_id}", headers={"Authorization": f"Bearer {key_a}"}).status_code == 403
     assert client.get("/api/v1/stats", headers={"Authorization": f"Bearer {key_a}"}).status_code == 403
+    own_context = client.get("/api/v1/telemetry/context", params={"telemetry_id": edge_b_record_id}, headers={"Authorization": f"Bearer {key_b}"})
+    cross_context = client.get("/api/v1/telemetry/context", params={"telemetry_id": edge_b_record_id}, headers={"Authorization": f"Bearer {key_a}"})
+    admin_context = client.get("/api/v1/telemetry/context", params={"telemetry_id": edge_b_record_id}, headers={"Authorization": "Bearer fleet-admin-key"})
+    assert own_context.status_code == 200
+    assert cross_context.status_code == 403
+    assert admin_context.status_code == 200
+    assert client.get("/api/v1/telemetry/context", params={"telemetry_id": edge_b_record_id}, headers={"Authorization": "Bearer invalid"}).status_code == 401
+    assert client.get("/api/v1/telemetry/context", params={"telemetry_id": edge_b_record_id}).status_code == 401
 
     investigation = client.get("/api/v1/investigations", params={"device_id": "DEVICE-A", "sensor_id": "EDGE-A"}, headers={"Authorization": f"Bearer {key_a}"})
     cross_investigation = client.get("/api/v1/investigations", params={"device_id": "DEVICE-B", "sensor_id": "EDGE-B"}, headers={"Authorization": f"Bearer {key_a}"})
@@ -147,3 +159,28 @@ def test_ml_training_uses_storage_bound(monkeypatch, tmp_path):
     monkeypatch.setattr(service.model, "train", lambda records: len(records))
     assert service.train() == 0
     assert storage.limit == MAX_TRAINING_RECORDS == 1000
+
+
+def test_setup_and_health_reject_invalid_max_active_flows(tmp_path):
+    interface = socket.if_nameindex()[0][1]
+    config = yaml.safe_load(Path("config/config.example.yaml").read_text())
+    config["deployment"]["mode"] = "edge"
+    config["edge"].update({"sensor_id": "EDGE-CONFIG", "interface": interface, "hub_url": "http://127.0.0.1:8000"})
+    config["hub"]["api_key"] = "edge-key"
+    config_path = tmp_path / "config.yaml"
+
+    for invalid in (0, -1, 10.5, "100", True, False, None):
+        config["edge"]["max_active_flows"] = invalid
+        config_path.write_text(yaml.safe_dump(config))
+        config_path.chmod(0o600)
+        assert main(["setup", "--config-path", str(config_path), "--check"]) == 2
+        report = HealthChecker(config_path=config_path).run()
+        assert report.get("configuration").status == HealthStatus.ERROR
+
+    for valid in (1, 2, 10000):
+        config["edge"]["max_active_flows"] = valid
+        config_path.write_text(yaml.safe_dump(config))
+        config_path.chmod(0o600)
+        assert main(["setup", "--config-path", str(config_path), "--check"]) == 0
+        report = HealthChecker(config_path=config_path).run()
+        assert report.get("configuration").status == HealthStatus.OK

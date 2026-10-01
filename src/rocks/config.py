@@ -18,6 +18,12 @@ DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.yaml"
 DEFAULT_CONFIG_TEMPLATE_PATH = CONFIG_DIR / "config.example.yaml"
 
 
+def validate_positive_integer(value: Any, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
 def build_default_config() -> dict[str, Any]:
     template_path = DEFAULT_CONFIG_TEMPLATE_PATH
     if template_path.exists():
@@ -177,8 +183,7 @@ def get_edge_agent_config(config_path: str | Path | None = None) -> dict[str, An
         raise ValueError("edge.buffer_limit must be a positive integer")
     if isinstance(raw_window_seconds, bool) or not math.isfinite(telemetry_window_seconds) or telemetry_window_seconds <= 0:
         raise ValueError("telemetry.window_seconds must be a positive finite number")
-    if isinstance(raw_max_active_flows, bool) or max_active_flows <= 0 or raw_max_active_flows != max_active_flows:
-        raise ValueError("edge.max_active_flows must be a positive integer")
+    validate_positive_integer(raw_max_active_flows, field="edge.max_active_flows")
     return {
         "sensor_id": os.getenv("ROCKS_SENSOR_ID", str(edge.get("sensor_id", "ROCKS-EDGE-01"))),
         "interface": os.getenv("ROCKS_INTERFACE", str(edge.get("interface", ""))),

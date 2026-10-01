@@ -19,6 +19,7 @@ from rocks.config import (
     get_config_path,
     get_edge_agent_config,
     load_config,
+    validate_positive_integer,
     write_config,
 )
 from rocks.dashboard.auth import hash_password
@@ -288,6 +289,7 @@ def _validate_setup_config(config: dict[str, object], *, require_registration_ke
             raise ValueError("Edge send interval must be a positive number.") from exc
         if not math.isfinite(send_interval) or send_interval <= 0:
             raise ValueError("Edge send interval must be a positive number.")
+        validate_positive_integer(edge.get("max_active_flows", 10_000), field="edge.max_active_flows")
         if mode == "edge" and not str(hub.get("api_key", "")).strip():
             raise ValueError("An Edge API key is required for Edge deployment.")
         if mode == "all-in-one" and require_registration_key and not str(hub.get("api_key", "")).strip():

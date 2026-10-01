@@ -202,6 +202,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
                 resolve_time_range(since, until)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if telemetry_id is not None:
+            anchor = service.storage.get_telemetry(telemetry_id)
+            if anchor is None:
+                return {"trigger": None, "related": []}
+            if scope is not None and anchor.sensor_id != scope:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sensor access is limited to its own records")
+            sensor_id = sensor_id or anchor.sensor_id
         try:
             return service.storage.telemetry_context(
                 device_id=device_id,
