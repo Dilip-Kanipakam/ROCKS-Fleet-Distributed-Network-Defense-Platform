@@ -1,5 +1,4 @@
-# Minimal runtime dependencies for the ROCKS Fleet foundation.
-# Edge packet metadata observation uses Scapy; no ML, Hub, or dashboard framework is included.
+# Runtime dependencies for the ROCKS Fleet package, including Edge, Hub, dashboard, and local ML support.
 PyYAML>=6.0
 fastapi>=0.115,<0.116
 scapy>=2.5,<3.0

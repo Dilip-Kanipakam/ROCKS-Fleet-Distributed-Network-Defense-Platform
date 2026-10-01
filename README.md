@@ -142,7 +142,7 @@ The Hub stores telemetry and exposes these implemented paths:
 - `GET /api/v1/stats`
 - `GET/POST /api/v1/investigations`
 - `GET/PATCH /api/v1/investigations/{investigation_id}`
-- `GET/POST /api/v1/investigations/{investigation_id}/timeline`, `/events`, `/notes`, and `/actions`
+- `GET /api/v1/investigations/{investigation_id}/timeline`; `POST /api/v1/investigations/{investigation_id}/events`, `/notes`, and `/actions`
 - `POST /api/v1/investigations/{investigation_id}/close`
 
 Telemetry ingestion uses the registered Edge bearer API key. Investigation and query responses contain bounded metadata and evidence; they do not enable automatic enforcement.
