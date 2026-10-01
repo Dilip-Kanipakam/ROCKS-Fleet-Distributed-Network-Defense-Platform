@@ -203,9 +203,11 @@ def create_app(database_path: str | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if telemetry_id is not None:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", telemetry_id):
+                raise HTTPException(status_code=422, detail="Invalid telemetry_id")
             anchor = service.storage.get_telemetry(telemetry_id)
             if anchor is None:
-                return {"trigger": None, "related": []}
+                raise HTTPException(status_code=404, detail="Telemetry record not found")
             if scope is not None and anchor.sensor_id != scope:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sensor access is limited to its own records")
             sensor_id = sensor_id or anchor.sensor_id

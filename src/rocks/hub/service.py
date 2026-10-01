@@ -110,6 +110,7 @@ class HubService:
         if len(payload_json.encode("utf-8")) > 32 * 1024:
             raise ValueError("Telemetry payload exceeds the 32 KiB limit")
         _validate_telemetry_payload_keys(record.payload)
+        _validate_telemetry_payload_numbers(record.payload)
         if record.event_type not in EVENT_TYPES:
             raise ValueError("unsupported event_type")
         required_payloads = {
@@ -201,3 +202,16 @@ def _validate_telemetry_payload_keys(value: Any, *, depth: int = 0) -> None:
     elif isinstance(value, list):
         for child in value:
             _validate_telemetry_payload_keys(child, depth=depth + 1)
+
+
+def _validate_telemetry_payload_numbers(value: Any, *, path: tuple[str, ...] = ()) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _validate_telemetry_payload_numbers(child, path=path + (str(key),))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_telemetry_payload_numbers(child, path=path + (str(index),))
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value < 0:
+            field_path = ".".join(path) if path else "root"
+            raise ValueError(f"Telemetry payload contains a negative value at {field_path}")

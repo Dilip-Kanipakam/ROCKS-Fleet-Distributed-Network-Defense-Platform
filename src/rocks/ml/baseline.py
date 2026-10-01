@@ -56,8 +56,11 @@ class BaselineModel:
     def expected_traffic(self, record: TelemetryRecord) -> float | None:
         if self.model is None:
             return None
-        features = behavior_summary_features(record)
-        prediction = float(self.model.predict([[features[name] for name in FEATURE_NAMES]])[0])
+        try:
+            features = behavior_summary_features(record)
+            prediction = float(self.model.predict([[features[name] for name in FEATURE_NAMES]])[0])
+        except Exception:
+            return None
         return max(0.0, prediction)
 
     def save(self) -> None:
@@ -82,13 +85,21 @@ class BaselineModel:
     ) -> "BaselineModel":
         path = Path(model_path)
         if not path.exists():
-            return cls(path, minimum_samples=minimum_samples)
-        state = joblib.load(path)
+            return cls(path, minimum_samples=minimum_samples, model_version=model_version)
+        try:
+            state = joblib.load(path)
+        except Exception:
+            return cls(path, minimum_samples=minimum_samples, model_version=model_version)
+        if not isinstance(state, dict):
+            return cls(path, minimum_samples=minimum_samples, model_version=model_version)
+        model = state.get("model")
+        if model is not None and not hasattr(model, "predict"):
+            return cls(path, minimum_samples=minimum_samples, model_version=model_version)
         return cls(
             path,
             minimum_samples=int(state.get("minimum_samples", minimum_samples)),
             model_version=str(state.get("model_version", model_version)),
-            model=state.get("model"),
+            model=model,
             training_samples=int(state.get("training_samples", 0)),
             last_trained=state.get("last_trained"),
         )

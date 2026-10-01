@@ -184,3 +184,60 @@ def test_setup_and_health_reject_invalid_max_active_flows(tmp_path):
         assert main(["setup", "--config-path", str(config_path), "--check"]) == 0
         report = HealthChecker(config_path=config_path).run()
         assert report.get("configuration").status == HealthStatus.OK
+
+
+def test_negative_numeric_telemetry_values_are_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("ROCKS_ADMIN_API_KEY", "fleet-admin-key")
+    app = create_app(str(tmp_path / "hub.db"))
+    service = app.state.hub_service
+    _, key = service.registry.register("EDGE-NEG", "NEG")
+    client = TestClient(app)
+    record = _record("EDGE-NEG", "DEVICE-NEG")
+    bad = telemetry_to_dict(record)
+    bad["payload"]["packet_count"] = -1
+    response = client.post("/api/v1/telemetry", json=bad, headers={"Authorization": f"Bearer {key}"})
+    assert response.status_code == 422
+    assert "negative" in response.json()["detail"].lower()
+
+
+def test_buffer_enforces_hard_capacity(tmp_path):
+    from rocks.edge.buffer import TelemetryBuffer
+
+    buffer = TelemetryBuffer(tmp_path / "buffer.db", buffer_limit=2)
+    first = _record("EDGE-A", "DEVICE-A")
+    second = _record("EDGE-B", "DEVICE-B")
+    third = _record("EDGE-C", "DEVICE-C")
+    buffer.add(first)
+    buffer.add(second)
+    buffer.add(third)
+    assert buffer.size() == 2
+    remaining = {record.record_id for record in buffer.peek(limit=2)}
+    assert remaining == {second.record_id, third.record_id}
+    assert first.record_id not in remaining
+
+
+def test_corrupt_ml_model_loads_as_not_ready(tmp_path):
+    model_path = tmp_path / "corrupt.joblib"
+    model_path.write_bytes(b"not a valid joblib payload")
+    model = MLService.__dict__["__init__"] if False else None
+    from rocks.ml.baseline import BaselineModel
+
+    loaded = BaselineModel.load(model_path)
+    assert loaded.status.value == "NOT_READY"
+    assert loaded.model is None
+
+
+def test_context_endpoint_rejects_bad_or_missing_telemetry_ids(tmp_path, monkeypatch):
+    monkeypatch.setenv("ROCKS_ADMIN_API_KEY", "fleet-admin-key")
+    app = create_app(str(tmp_path / "hub.db"))
+    service = app.state.hub_service
+    _, key = service.registry.register("EDGE-CTX", "CTX")
+    client = TestClient(app)
+    record = _record("EDGE-CTX", "DEVICE-CTX")
+    response = client.post("/api/v1/telemetry", json=telemetry_to_dict(record), headers={"Authorization": f"Bearer {key}"})
+    assert response.status_code == 200
+
+    missing_response = client.get("/api/v1/telemetry/context", params={"telemetry_id": "missing-telemetry-id"}, headers={"Authorization": f"Bearer {key}"})
+    invalid_response = client.get("/api/v1/telemetry/context", params={"telemetry_id": "bad;id"}, headers={"Authorization": f"Bearer {key}"})
+    assert missing_response.status_code == 404
+    assert invalid_response.status_code == 422

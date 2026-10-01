@@ -4,11 +4,15 @@ import argparse
 import getpass
 import json
 import math
+import os
 import re
 import secrets
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -51,6 +55,7 @@ from rocks.service_manager import ServiceManager, ServiceManagerError
 from rocks.health import HealthChecker, HealthStatus
 from rocks.detection.config import get_detection_config
 from rocks.detection.engine import DetectionEngine
+from rocks.installer import dashboard_url, detect_platform, python_version_supported, service_install_command
 
 
 from scapy.layers.inet import IP, TCP, UDP
@@ -98,6 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
         "generate", help="write unit files to a directory without installing them"
     )
     generate_service_parser.add_argument("--output-dir", required=True)
+    install_parser = subparsers.add_parser("install", help="install ROCKS and guide first-time setup")
+    install_parser.add_argument("--mode", help="deployment mode: edge, hub, or all-in-one")
+    install_parser.add_argument("--config-path", help="path to the YAML config file to create or update")
+    install_parser.add_argument("--force", action="store_true", help="overwrite an existing config file when running installation setup")
+    install_parser.add_argument("--non-interactive", action="store_true", help="reuse and validate an existing configuration without prompts")
     setup_parser = subparsers.add_parser("setup", help="interactive configuration wizard")
     setup_parser.add_argument("--config-path", help="path to the YAML config file to create or update")
     setup_parser.add_argument("--mode", help="deployment mode: edge, hub, or all-in-one")
@@ -316,6 +326,112 @@ def _validate_setup_config(config: dict[str, object], *, require_registration_ke
             raise ValueError("Storage configuration must be a mapping.")
 
 
+def _run_installer(args: argparse.Namespace) -> int:
+    platform = detect_platform()
+    if platform != "linux":
+        raise ValueError("ROCKS installation is only supported on Linux hosts.")
+    if not python_version_supported():
+        raise ValueError("ROCKS requires Python 3.10 or newer.")
+    if os.geteuid() == 0:
+        raise ValueError("Run the installer as your normal account; it requests sudo only to install system services.")
+
+    config_path = Path(args.config_path) if args.config_path else Path(get_config_path())
+    requested_mode = _normalize_setup_mode(args.mode) if args.mode else None
+    if not Path(sys.executable).is_file():
+        raise ValueError("The active Python interpreter is unavailable.")
+    if not ServiceManager(config_path=config_path).systemd_check():
+        raise ValueError("An active systemd manager is required to complete ROCKS installation.")
+    sudo_executable = shutil.which("sudo")
+    if not sudo_executable:
+        raise ValueError("sudo is required to install systemd services. Install sudo or ask your system administrator.")
+
+    existing_config = config_path.is_file()
+    if existing_config and not args.force and requested_mode:
+        configured_mode = str(load_config(config_path).get("deployment", {}).get("mode", ""))
+        if requested_mode != configured_mode:
+            raise ValueError(
+                f"Existing configuration uses deployment mode {configured_mode!r}; pass --force to reconfigure it."
+            )
+    if args.non_interactive and (not existing_config or args.force):
+        raise ValueError("Non-interactive installation requires an existing config and cannot be combined with --force.")
+    if not args.non_interactive and not args.force and not existing_config and not sys.stdin.isatty():
+        raise ValueError("First-time installation needs a terminal for the guided setup. Run ./install-rocks.sh in a terminal.")
+
+    setup_args = argparse.Namespace(
+        config_path=str(config_path),
+        mode=requested_mode,
+        sensor_id=None,
+        interface=None,
+        hub_url=None,
+        api_key=None,
+        send_interval=None,
+        hub_host=None,
+        hub_port=None,
+        hub_database=None,
+        dashboard_host=None,
+        dashboard_port=None,
+        dashboard_username=None,
+        dashboard_password=None,
+        session_secret=None,
+        force=bool(args.force),
+        non_interactive=bool(args.non_interactive),
+        check=existing_config and not args.force,
+    )
+    print("ROCKS installer: checking Linux, Python, systemd, and administrator access.")
+    print(f"Platform: {platform} | Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+    if existing_config and not args.force:
+        print(f"Existing configuration found at {config_path}; it will be validated and preserved.")
+    setup_result = _setup_config(setup_args)
+    if setup_result != 0:
+        return setup_result
+
+    command = service_install_command(sudo_executable, sys.executable, config_path)
+    try:
+        service_result = subprocess.run(command, check=False)
+    except OSError as exc:
+        print(f"ROCKS service installation failed ({type(exc).__name__}).", file=sys.stderr)
+        return 2
+    if service_result.returncode != 0:
+        return service_result.returncode
+
+    config = load_config(config_path)
+    mode = str(config.get("deployment", {}).get("mode", ""))
+    dashboard_config = config.get("dashboard", {})
+    final_url = dashboard_url(
+        str(dashboard_config.get("host", "127.0.0.1")),
+        int(dashboard_config.get("port", 8000)),
+    ) if mode in {"hub", "all-in-one"} else ""
+
+    required = {"configuration"}
+    if mode in {"edge", "all-in-one"}:
+        required.update({"edge_service", "edge_storage", "edge_buffer"})
+    if mode in {"hub", "all-in-one"}:
+        required.update({"hub_service", "hub_database", "hub_api", "dashboard"})
+    deadline = time.monotonic() + 30
+    report = HealthChecker(config_path=config_path).run()
+    while time.monotonic() < deadline:
+        checks = {check.name: check for check in report.checks}
+        if required.issubset(checks) and all(
+            checks[name].status == HealthStatus.OK for name in required
+        ):
+            break
+        time.sleep(1)
+        report = HealthChecker(config_path=config_path).run()
+    checks = {check.name: check for check in report.checks}
+    for check in report.checks:
+        print(f"Health: {check.name} {check.status.value}")
+    if not required.issubset(checks) or any(
+        checks[name].status != HealthStatus.OK for name in required
+    ):
+        print("ROCKS health checks did not pass. Run 'rocks health verbose' for diagnostics.", file=sys.stderr)
+        return 1
+
+    print("ROCKS READY")
+    if final_url:
+        print(f"Dashboard URL: {final_url}")
+    return 0
+
+
 def _setup_config(args: argparse.Namespace) -> int:
     config_path = Path(args.config_path) if args.config_path else Path(get_config_path())
     if config_path.resolve() == DEFAULT_CONFIG_TEMPLATE_PATH.resolve():
@@ -530,6 +646,13 @@ def main(argv: list[str] | None = None) -> int:
             return _setup_config(args)
         except (ValueError, FileNotFoundError) as exc:
             print(f"ROCKS setup error: {exc}", file=sys.stderr)
+            return 2
+
+    if args.command == "install":
+        try:
+            return _run_installer(args)
+        except (ValueError, FileNotFoundError) as exc:
+            print(f"ROCKS installer error: {exc}", file=sys.stderr)
             return 2
 
     if args.command == "logs":
@@ -935,7 +1058,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"ROCKS Fleet {__version__}")
     print("")
-    print("Usage: rocks [--version] [status|config|logs|test]")
+    print("Usage: rocks [--version] [status|config|logs|test|install]")
     print("Run 'rocks --help' for more information.")
     return 0
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from rocks.config import get_buffer_path
+from rocks.config import get_buffer_path, validate_positive_integer
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
 from rocks.logging_config import configure_logging
 from rocks.sqlite import connect_sqlite, enable_wal
@@ -12,8 +12,9 @@ from rocks.sqlite import connect_sqlite, enable_wal
 class TelemetryBuffer:
     """Persistent local FIFO buffer with no Hub or networking behavior."""
 
-    def __init__(self, database_path: str | Path | None = None) -> None:
+    def __init__(self, database_path: str | Path | None = None, *, buffer_limit: int = 10_000) -> None:
         self.database_path = Path(database_path) if database_path is not None else get_buffer_path()
+        self.buffer_limit = validate_positive_integer(buffer_limit, field="buffer_limit")
         self._logger = configure_logging()
         self.initialize()
 
@@ -28,6 +29,13 @@ class TelemetryBuffer:
     def add(self, record: TelemetryRecord) -> bool:
         try:
             with self._connect() as connection:
+                count = int(connection.execute("SELECT COUNT(*) FROM buffer").fetchone()[0])
+                if count >= self.buffer_limit:
+                    overflow = count - self.buffer_limit + 1
+                    connection.execute(
+                        "DELETE FROM buffer WHERE sequence IN (SELECT sequence FROM buffer ORDER BY sequence ASC LIMIT ?)",
+                        (overflow,),
+                    )
                 connection.execute(
                     "INSERT INTO buffer (record_id, payload_json) VALUES (?, ?)",
                     (record.record_id, telemetry_to_json(record)),

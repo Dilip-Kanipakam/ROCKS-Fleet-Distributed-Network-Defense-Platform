@@ -76,6 +76,26 @@ rocks demo --mode normal
 .venv/bin/python -m compileall src tests
 ```
 
+## One-command Linux installation
+
+For a simple, non-technical setup on a Linux host, use the repository installer script:
+
+```bash
+git clone <repository-url>
+cd Project-RocksFleet
+./install-rocks.sh
+```
+
+The script checks Linux, Python 3.10+, systemd, and sudo; creates `.venv`; installs ROCKS and its Python dependencies; then launches the guided configuration wizard. It preserves and validates an existing config unless `--force` is explicitly supplied. After setup, it uses the existing systemd service manager, which grants `CAP_NET_RAW` to the Edge service through the unit rather than running the application as root, enables and starts the configured services, runs health checks, and prints `ROCKS READY` plus the dashboard URL. It does not fetch remote installer scripts or modify switches, routers, firewalls, or network topology. Run it as your normal account; sudo is requested only for OS package/service operations.
+
+For an existing validated config, the CLI can complete service installation without prompting:
+
+```bash
+./.venv/bin/rocks install --non-interactive
+```
+
+Developers and advanced operators can still create environments manually and run `rocks setup` / `rocks setup --check` directly.
+
 Start the combined Hub and dashboard after configuring a Hub deployment:
 
 ```bash
