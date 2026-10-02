@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -1100,7 +1101,12 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"ROCKS simulate error: {exc}", file=sys.stderr)
             return 2
-        records = generate_records(scenario, count=args.count, sensor_id=args.sensor_id)
+        records = generate_records(
+            scenario,
+            count=args.count,
+            sensor_id=args.sensor_id,
+            start=datetime.now(timezone.utc) - timedelta(minutes=max(0, args.count - 1)),
+        )
         simulation = any(record.payload.get("simulation") for record in records)
         print(f"Generated {len(records)} safe synthetic {scenario.value} telemetry records.")
         print(f"Scenario: {scenario.value}")
@@ -1108,6 +1114,18 @@ def main(argv: list[str] | None = None) -> int:
         print("Synthetic data: yes")
         print(f"Explicit simulation marker: {'yes' if simulation else 'no'}")
         print("No live packets or external attack activity were generated.")
+        edge_values = get_edge_agent_config()
+        edge_values["sensor_id"] = args.sensor_id
+        if edge_values["hub_url"] and edge_values["api_key"]:
+            with tempfile.TemporaryDirectory(prefix="rocks-simulate-") as directory:
+                edge_values["database_path"] = Path(directory) / "telemetry.db"
+                edge_values["buffer_path"] = Path(directory) / "buffer.db"
+                result = EdgeAgent(EdgeAgentConfig(**edge_values)).run_dry_run(records)
+            print(f"Hub delivery: sent={result.sent} failed={result.failed}")
+            if result.failed or result.sent != len(records):
+                return 1
+        else:
+            print("Hub delivery: not configured; records were generated only")
         return 0
 
     if args.command == "alerts":

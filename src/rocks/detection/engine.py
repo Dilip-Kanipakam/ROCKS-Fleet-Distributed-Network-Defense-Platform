@@ -119,8 +119,13 @@ class DetectionEngine:
                 rules.append(
                     DetectionRuleResult(
                         "HIGH_TRAFFIC", "WARNING", "High traffic activity",
-                        "Observed traffic rate was unusually high and exceeded the configured threshold.",
+                        (
+                            "Simulated traffic rate exceeded the configured high-traffic threshold."
+                            if simulation
+                            else "Observed traffic rate was unusually high and exceeded the configured threshold."
+                        ),
                         {"traffic_rate": traffic_rate, "threshold": self.config.high_traffic_rate, "window_seconds": window},
+                        simulation=simulation,
                     )
                 )
             connections = _number(payload, "connection_count")
@@ -129,8 +134,13 @@ class DetectionEngine:
                 rules.append(
                     DetectionRuleResult(
                         "CONNECTION_BURST", "WARNING", "High connection activity",
-                        "Connection activity exceeded the configured rate for this observation window.",
+                        (
+                            "Simulated connection activity exceeded the configured rate for this observation window."
+                            if simulation
+                            else "Connection activity exceeded the configured rate for this observation window."
+                        ),
                         {"connection_count": connections, "observed_rate": connection_rate, "threshold": self.config.connection_burst_rate, "window_seconds": window},
+                        simulation=simulation,
                     )
                 )
             unique_destinations = _number(payload, "unique_destination_ip_count")

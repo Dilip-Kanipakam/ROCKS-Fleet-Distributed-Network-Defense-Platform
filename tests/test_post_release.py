@@ -177,11 +177,15 @@ def test_dashboard_mutations_reject_cross_origin_but_allow_same_origin(tmp_path,
     assert read_only.status_code == 200
 
 
-def test_simulator_cli_labels_all_records_as_synthetic(capsys):
+def test_simulator_cli_labels_all_records_as_synthetic(capsys, monkeypatch):
+    monkeypatch.setattr(
+        "rocks.cli.get_edge_agent_config",
+        lambda: {"sensor_id": "ROCKS-SIM-01", "hub_url": "", "api_key": ""},
+    )
     assert main(["simulate", "high_traffic"]) == 0
     normal_output = capsys.readouterr().out
     assert "Synthetic data: yes" in normal_output
-    assert "Explicit simulation marker: no" in normal_output
+    assert "Explicit simulation marker: yes" in normal_output
     assert main(["simulate", "deauth_related_simulation"]) == 0
     simulated_output = capsys.readouterr().out
     assert "Synthetic data: yes" in simulated_output

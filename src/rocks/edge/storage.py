@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from rocks.config import get_storage_path
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
@@ -115,7 +116,12 @@ class TelemetryStorage:
             rows = connection.execute(query, parameters).fetchall()
         return [telemetry_from_json(row[0]) for row in rows]
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = connect_sqlite(self.database_path)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()

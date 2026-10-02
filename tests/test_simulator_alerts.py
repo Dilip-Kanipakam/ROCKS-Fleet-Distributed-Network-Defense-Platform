@@ -15,6 +15,8 @@ def test_simulator_scenarios_are_safe_and_typed():
         records = generate_records(scenario, count=2)
         assert len(records) == 2
         assert all(record.sensor_id == "ROCKS-SIM-01" for record in records)
+        assert all(record.payload["simulation"] is True for record in records)
+        assert all(record.payload["simulation_type"] == scenario.value.upper() for record in records)
     deauth = generate_records(Scenario.DEAUTH_RELATED_SIMULATION)[0]
     assert deauth.payload["simulation"] is True
     assert deauth.payload["simulation_type"] == "DEAUTH_RELATED_SIMULATION"
@@ -33,6 +35,19 @@ def test_alert_thresholds_and_structure():
     assert alert.severity == "HIGH"
     assert alert.status == "OPEN"
     assert "attack" not in alert.message.lower()
+
+
+def test_high_traffic_demo_detection_is_explicitly_simulated():
+    from rocks.detection.engine import DetectionEngine
+
+    record = generate_records(Scenario.HIGH_TRAFFIC, count=1, sensor_id="DEMO-EDGE-01")[0]
+    assessment = DetectionEngine().assess(record)
+
+    assert assessment.simulation is True
+    assert assessment.severity == "WARNING"
+    assert assessment.rules_triggered[0].rule_id == "HIGH_TRAFFIC"
+    assert assessment.rules_triggered[0].simulation is True
+    assert assessment.rules_triggered[0].reason.startswith("Simulated traffic rate")
 
 
 def test_alert_persistence_and_duplicate_prevention(tmp_path):

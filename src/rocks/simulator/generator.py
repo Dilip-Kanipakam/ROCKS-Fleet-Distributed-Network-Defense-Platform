@@ -45,7 +45,7 @@ def _record(scenario: Scenario, index: int, sensor_id: str, timestamp: datetime)
         Scenario.MIXED_ANOMALOUS: 15_000,
     }[scenario]
     if scenario in {Scenario.DNS_ANOMALY}:
-        return dns_telemetry(
+        record = dns_telemetry(
             sensor_id,
             source_ip="192.0.2.10",
             source_port=53000,
@@ -56,14 +56,16 @@ def _record(scenario: Scenario, index: int, sensor_id: str, timestamp: datetime)
             device_id="SIM-DEVICE-01",
             timestamp=timestamp,
         )
+        return _mark_simulation(record, scenario)
     if scenario == Scenario.RECONNECT_STORM:
-        return reconnect_telemetry(
+        record = reconnect_telemetry(
             sensor_id,
             reconnect_count=12,
             connection_failure_count=9,
             device_id="SIM-DEVICE-01",
             timestamp=timestamp,
         )
+        return _mark_simulation(record, scenario)
     payload_features = {
         "window_start": timestamp.timestamp(),
         "window_end": timestamp.timestamp() + 60,
@@ -91,7 +93,10 @@ def _record(scenario: Scenario, index: int, sensor_id: str, timestamp: datetime)
         device_id="SIM-DEVICE-01",
         timestamp=timestamp,
     )
-    if scenario == Scenario.DEAUTH_RELATED_SIMULATION:
-        record.payload["simulation"] = True
-        record.payload["simulation_type"] = "DEAUTH_RELATED_SIMULATION"
+    return _mark_simulation(record, scenario)
+
+
+def _mark_simulation(record: TelemetryRecord, scenario: Scenario) -> TelemetryRecord:
+    record.payload["simulation"] = True
+    record.payload["simulation_type"] = scenario.value.upper()
     return record

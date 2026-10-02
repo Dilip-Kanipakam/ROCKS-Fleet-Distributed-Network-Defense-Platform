@@ -173,7 +173,11 @@ class EdgeAgent:
     def send_pending(self) -> SendResult:
         if self.sender is None:
             return SendResult(sent=0, failed=0)
-        result = self.sender.send_pending(self.buffer, limit=min(100, self.config.buffer_limit))
+        result = self.sender.send_pending(
+            self.buffer,
+            limit=min(100, self.config.buffer_limit),
+            sensor_id=self.config.sensor_id,
+        )
         if result.sent:
             self.last_successful_send = _utc_now()
             self.logger.info("EDGE_HUB_SEND_SUCCESS count=%s", result.sent)
@@ -197,12 +201,12 @@ class EdgeAgent:
             sender_thread.join(timeout=self.config.send_interval_seconds + 1)
             self.logger.info("EDGE_STOPPED sensor_id=%s", self.config.sensor_id)
 
-    def run_dry_run(self, records: list[TelemetryRecord]) -> None:
+    def run_dry_run(self, records: list[TelemetryRecord]) -> SendResult:
         for record in records:
             self.storage.insert_telemetry(record)
             self.buffer.add(record)
             self.telemetry_generated += 1
-        self.send_pending()
+        return self.send_pending()
 
     def stop(self) -> None:
         self.stop_event.set()

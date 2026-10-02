@@ -39,16 +39,28 @@ class EdgeSender:
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                     if 200 <= response.status < 300:
-                        json.loads(response.read().decode("utf-8"))
+                        body = json.loads(response.read().decode("utf-8"))
+                        self._logger.info(
+                            "EDGE_HUB_TELEMETRY_ACCEPTED telemetry_id=%s status=%s http_status=%s",
+                            body.get("telemetry_id", record.record_id),
+                            body.get("status", "unknown"),
+                            response.status,
+                        )
                         return True
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError) as exc:
                 self._logger.warning("Hub telemetry delivery failed: %s", exc.__class__.__name__)
         return False
 
-    def send_pending(self, buffer: TelemetryBuffer, *, limit: int = 100) -> SendResult:
+    def send_pending(
+        self,
+        buffer: TelemetryBuffer,
+        *,
+        limit: int = 100,
+        sensor_id: str | None = None,
+    ) -> SendResult:
         sent = 0
         failed = 0
-        for record in buffer.peek(limit):
+        for record in buffer.peek(limit, sensor_id=sensor_id):
             if self.send_record(record):
                 buffer.remove(record.record_id)
                 sent += 1

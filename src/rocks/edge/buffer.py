@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from rocks.config import get_buffer_path, validate_positive_integer
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
@@ -46,13 +48,19 @@ class TelemetryBuffer:
         self._logger.debug("Telemetry added to local buffer: %s", record.record_id)
         return True
 
-    def peek(self, limit: int = 1) -> list[TelemetryRecord]:
+    def peek(self, limit: int = 1, *, sensor_id: str | None = None) -> list[TelemetryRecord]:
         if limit <= 0:
             return []
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT payload_json FROM buffer ORDER BY sequence ASC LIMIT ?", (limit,)
-            ).fetchall()
+            if sensor_id is None:
+                rows = connection.execute(
+                    "SELECT payload_json FROM buffer ORDER BY sequence ASC LIMIT ?", (limit,)
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT payload_json FROM buffer WHERE json_extract(payload_json, '$.sensor_id') = ? ORDER BY sequence ASC LIMIT ?",
+                    (sensor_id, limit),
+                ).fetchall()
         return [telemetry_from_json(row[0]) for row in rows]
 
     def remove(self, record_id: str | None = None, limit: int = 1) -> int:
@@ -75,5 +83,11 @@ class TelemetryBuffer:
         with self._connect() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM buffer").fetchone()[0])
 
-    def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.database_path)
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        connection = connect_sqlite(self.database_path)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()

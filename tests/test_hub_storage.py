@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 from rocks.edge.features import TrafficFeatures
@@ -29,6 +30,21 @@ def test_hub_storage_persists_registry_and_telemetry(tmp_path):
     assert reopened.get_edge(edge.sensor_id).name == "Lab Edge"
     assert reopened.insert_telemetry(record) is False
     assert reopened.event_type_counts() == {"BEHAVIOR_SUMMARY": 1}
+
+
+def test_repeated_hub_storage_access_closes_sqlite_descriptors(tmp_path):
+    descriptor_directory = "/proc/self/fd"
+    if not os.path.isdir(descriptor_directory):
+        return
+    storage = HubStorage(tmp_path / "descriptor-check.db")
+    storage.initialize()
+    before = len(os.listdir(descriptor_directory))
+
+    for _ in range(50):
+        storage.count()
+
+    after = len(os.listdir(descriptor_directory))
+    assert after <= before + 1
 
 
 def test_analysis_is_unique_by_telemetry_and_model(tmp_path):

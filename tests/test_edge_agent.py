@@ -39,10 +39,10 @@ def test_sender_success_removes_and_failure_preserves(tmp_path, monkeypatch):
     )
     records = generate_records(Scenario.NORMAL, count=1, sensor_id="EDGE-TEST")
     agent.run_dry_run(records)
-    monkeypatch.setattr(agent.sender, "send_pending", lambda _buffer, limit: SendResult(sent=1, failed=0))
+    monkeypatch.setattr(agent.sender, "send_pending", lambda _buffer, **_kwargs: SendResult(sent=1, failed=0))
     # A mocked result does not remove data; the real sender contract is tested in test_sender.py.
     assert agent.buffer.size() == 1
-    monkeypatch.setattr(agent.sender, "send_pending", lambda _buffer, limit: SendResult(sent=0, failed=1))
+    monkeypatch.setattr(agent.sender, "send_pending", lambda _buffer, **_kwargs: SendResult(sent=0, failed=1))
     assert agent.send_pending().failed == 1
     assert agent.buffer.size() == 1
 

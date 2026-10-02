@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 from datetime import datetime, timezone
 
 from rocks.edge.features import TrafficFeatures
@@ -42,3 +43,18 @@ def test_delete_before_and_payload_only_metadata(tmp_path):
     assert storage.delete_before("2026-01-02T00:00:00+00:00") == 1
     assert storage.count() == 1
     assert "secret payload" not in str(storage.get_recent()[0].payload)
+
+
+def test_repeated_edge_storage_access_closes_sqlite_descriptors(tmp_path):
+    descriptor_directory = "/proc/self/fd"
+    if not os.path.isdir(descriptor_directory):
+        return
+    storage = TelemetryStorage(tmp_path / "descriptor-check.db")
+    storage.initialize()
+    before = len(os.listdir(descriptor_directory))
+
+    for _ in range(50):
+        storage.count()
+
+    after = len(os.listdir(descriptor_directory))
+    assert after <= before + 1

@@ -174,6 +174,9 @@ def test_dashboard_events_and_alerts_show_detection_evidence_and_simulation(tmp_
     assert "DEAUTH_RELATED" in events_page.text
     assert "802.11" not in events_page.text
     assert "SIMULATED" in alerts_page.text
+    telemetry_page = client.get("/dashboard/telemetry")
+    assert "SIMULATED DEAUTH_RELATED_SIMULATION" in telemetry_page.text
+    assert service.storage.dashboard_telemetry()[0]["simulation"] is True
     assert alerts_api.json()[0]["assessment"]["simulation"] is True
 
 

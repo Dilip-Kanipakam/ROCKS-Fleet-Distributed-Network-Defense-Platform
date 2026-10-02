@@ -83,6 +83,43 @@ label,
   min-width: 720px;
 }
 
+.table-scroll .alerts-table {
+  min-width: 1640px;
+  table-layout: auto;
+}
+
+.table-scroll .alerts-table th {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.alerts-table td {
+  vertical-align: top;
+}
+
+.alerts-table td:last-child {
+  min-width: 190px;
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--panel);
+  box-shadow: -8px 0 12px -10px var(--text);
+}
+
+.alerts-table th:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--panel);
+  box-shadow: -8px 0 12px -10px var(--text);
+}
+
+.alerts-table td:last-child button {
+  min-width: 92px;
+  min-height: 36px;
+}
+
 .table-scroll th,
 .table-scroll td {
   white-space: normal;

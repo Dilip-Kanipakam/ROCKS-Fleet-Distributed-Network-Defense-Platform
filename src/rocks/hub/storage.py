@@ -3,9 +3,10 @@ from __future__ import annotations
 import sqlite3
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from rocks.edge.telemetry import TelemetryRecord, telemetry_from_json, telemetry_to_json
 from rocks.alerts.engine import Alert
@@ -946,6 +947,8 @@ class HubStorage:
                     "sensor_id": row[2],
                     "device_id": row[3],
                     "event_type": row[4],
+                    "simulation": bool(payload.get("simulation")),
+                    "simulation_type": payload.get("simulation_type"),
                     "source_ip": source.get("ip", payload.get("source_ip")),
                     "destination_ip": destination.get("ip", payload.get("destination_ip")),
                     "protocol": payload.get("protocol"),
@@ -1207,10 +1210,15 @@ class HubStorage:
             open_count = connection.execute("SELECT COUNT(*) FROM alerts WHERE status = 'OPEN'").fetchone()[0]
         return {"total_recent": int(total), "high": int(high), "warning": int(warning), "open": int(open_count)}
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = connect_sqlite(self.database_path)
         connection.row_factory = sqlite3.Row
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _edge_info(self, row: sqlite3.Row) -> EdgeInfo:
         return EdgeInfo(
