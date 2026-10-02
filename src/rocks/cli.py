@@ -55,7 +55,15 @@ from rocks.service_manager import ServiceManager, ServiceManagerError
 from rocks.health import HealthChecker, HealthStatus
 from rocks.detection.config import get_detection_config
 from rocks.detection.engine import DetectionEngine
-from rocks.installer import dashboard_url, detect_platform, python_version_supported, service_install_command
+from rocks.installer import (
+    dashboard_url,
+    detect_platform,
+    listener_port_available,
+    physical_interfaces,
+    python_version_supported,
+    service_base_url,
+    service_install_command,
+)
 
 
 from scapy.layers.inet import IP, TCP, UDP
@@ -94,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     service_parser = subparsers.add_parser("service", help="manage ROCKS Linux systemd services")
     service_subparsers = service_parser.add_subparsers(dest="service_command")
     service_subparsers.add_parser("status", help="show installed and running service state")
+    service_subparsers.add_parser("verify", help="verify running service state and security settings")
     service_subparsers.add_parser("install", help="install and start services for the configured mode")
     service_subparsers.add_parser("uninstall", help="stop, disable, and remove ROCKS service units")
     service_subparsers.add_parser("start", help="start configured ROCKS services")
@@ -256,16 +265,29 @@ def _validate_http_url(value: str, label: str) -> None:
 
 
 def _choose_interface(current: str = "") -> str:
-    interfaces = _available_interfaces()
-    if not interfaces:
+    all_interfaces = _available_interfaces()
+    if not all_interfaces:
         raise ValueError("No network interfaces are available for Edge setup.")
+    interfaces = physical_interfaces(all_interfaces) or all_interfaces
+    if physical_interfaces(all_interfaces):
+        print("Detected active physical network interfaces:")
+        print("  A. Show all interfaces (advanced)")
+    else:
+        print("No active physical interface was detected; showing available interfaces.")
     print("Available network interfaces:")
     for index, name in enumerate(interfaces, start=1):
         selected = " (configured)" if name == current else ""
         print(f"  {index}. {name}{selected}")
     default = str(interfaces.index(current) + 1) if current in interfaces else ""
     while True:
-        choice = _prompt_value("Select interface number or enter its name", default=default)
+        choice = _prompt_value("Select interface number/name" + (" or A for advanced" if physical_interfaces(all_interfaces) else ""), default=default)
+        if choice.lower() in {"a", "advanced"} and physical_interfaces(all_interfaces):
+            interfaces = all_interfaces
+            print("Advanced interface list:")
+            for index, name in enumerate(interfaces, start=1):
+                print(f"  {index}. {name}")
+            default = str(interfaces.index(current) + 1) if current in interfaces else ""
+            continue
         if choice in interfaces:
             return choice
         if choice.isdigit() and 1 <= int(choice) <= len(interfaces):
@@ -322,6 +344,10 @@ def _validate_setup_config(config: dict[str, object], *, require_registration_ke
             raise ValueError("Hub and dashboard ports must be integers from 1 to 65535.") from exc
         if not 1 <= hub_port <= 65535 or not 1 <= dashboard_port <= 65535:
             raise ValueError("Hub and dashboard ports must be integers from 1 to 65535.")
+        if hub_port != dashboard_port:
+            raise ValueError(
+                "The Hub API and Dashboard share one listener in this deployment; configure the same port for both."
+            )
         if not isinstance(storage, dict):
             raise ValueError("Storage configuration must be a mapping.")
 
@@ -354,6 +380,12 @@ def _run_installer(args: argparse.Namespace) -> int:
             )
     if args.non_interactive and (not existing_config or args.force):
         raise ValueError("Non-interactive installation requires an existing config and cannot be combined with --force.")
+    if (
+        getattr(args, "hub_port", None) is not None
+        and getattr(args, "dashboard_port", None) is not None
+        and args.hub_port != args.dashboard_port
+    ):
+        raise ValueError("The Hub API and Dashboard share one listener; --hub-port and --dashboard-port must match.")
     if not args.non_interactive and not args.force and not existing_config and not sys.stdin.isatty():
         raise ValueError("First-time installation needs a terminal for the guided setup. Run ./install-rocks.sh in a terminal.")
 
@@ -385,17 +417,65 @@ def _run_installer(args: argparse.Namespace) -> int:
     if setup_result != 0:
         return setup_result
 
+    config = load_config(config_path)
+    mode = str(config.get("deployment", {}).get("mode", ""))
+    units = ServiceManager(config_path=config_path)
+    deployment_unit_names = {
+        "edge": ["rocks-edge.service"],
+        "hub": ["rocks-hub.service"],
+        "all-in-one": ["rocks-edge.service", "rocks-hub.service"],
+    }.get(mode, [])
+    previously_active: set[str] = set()
+    try:
+        previously_active = {
+            unit_name
+            for unit_name, active, _enabled in units.status()
+            if active == "active"
+        }
+    except ServiceManagerError:
+        pass
+    cleanup_units = [unit_name for unit_name in deployment_unit_names if unit_name not in previously_active]
+    if mode in {"hub", "all-in-one"}:
+        dashboard_config = config.get("dashboard", {})
+        bind_host = str(dashboard_config.get("host", "127.0.0.1"))
+        bind_port = int(dashboard_config.get("port", 8000))
+        if not listener_port_available(bind_host, bind_port):
+            existing_report = HealthChecker(config_path=config_path).run() if existing_config and not args.force else None
+            existing_checks = {check.name: check for check in existing_report.checks} if existing_report else {}
+            if not (
+                existing_checks.get("hub_service")
+                and existing_checks["hub_service"].status == HealthStatus.OK
+                and existing_checks.get("hub_api")
+                and existing_checks["hub_api"].status == HealthStatus.OK
+            ):
+                return _installer_failed(
+                    "Hub/Dashboard port",
+                    f"Port {bind_port} on {bind_host} is already in use by another process.",
+                    sudo_executable,
+                    deployment_unit_names,
+                )
+
     command = service_install_command(sudo_executable, sys.executable, config_path)
     try:
         service_result = subprocess.run(command, check=False)
     except OSError as exc:
-        print(f"ROCKS service installation failed ({type(exc).__name__}).", file=sys.stderr)
-        return 2
+        return _installer_failed(
+            "systemd installation",
+            f"Unable to run service installation ({type(exc).__name__}).",
+            sudo_executable,
+            cleanup_units,
+            stop_services=bool(cleanup_units),
+        )
     if service_result.returncode != 0:
-        return service_result.returncode
+        return _installer_failed(
+            "systemd installation",
+            "The existing ROCKS service manager returned an error.",
+            sudo_executable,
+            cleanup_units,
+            exit_code=service_result.returncode,
+            stop_services=bool(cleanup_units),
+        )
 
-    config = load_config(config_path)
-    mode = str(config.get("deployment", {}).get("mode", ""))
     dashboard_config = config.get("dashboard", {})
     final_url = dashboard_url(
         str(dashboard_config.get("host", "127.0.0.1")),
@@ -404,14 +484,23 @@ def _run_installer(args: argparse.Namespace) -> int:
 
     required = {"configuration"}
     if mode in {"edge", "all-in-one"}:
-        required.update({"edge_service", "edge_storage", "edge_buffer"})
+        required.update({"edge_service", "edge_storage", "edge_buffer", "hub_api"})
     if mode in {"hub", "all-in-one"}:
         required.update({"hub_service", "hub_database", "hub_api", "dashboard"})
     deadline = time.monotonic() + 30
     report = HealthChecker(config_path=config_path).run()
+    verification_error: str | None = None
+    services_verified = False
     while time.monotonic() < deadline:
         checks = {check.name: check for check in report.checks}
-        if required.issubset(checks) and all(
+        try:
+            units.verify()
+            services_verified = True
+            verification_error = None
+        except ServiceManagerError as exc:
+            services_verified = False
+            verification_error = str(exc)
+        if services_verified and required.issubset(checks) and all(
             checks[name].status == HealthStatus.OK for name in required
         ):
             break
@@ -420,11 +509,22 @@ def _run_installer(args: argparse.Namespace) -> int:
     checks = {check.name: check for check in report.checks}
     for check in report.checks:
         print(f"Health: {check.name} {check.status.value}")
-    if not required.issubset(checks) or any(
+    if not services_verified or not required.issubset(checks) or any(
         checks[name].status != HealthStatus.OK for name in required
     ):
-        print("ROCKS health checks did not pass. Run 'rocks health verbose' for diagnostics.", file=sys.stderr)
-        return 1
+        failed_checks = [name for name in required if name not in checks or checks[name].status != HealthStatus.OK]
+        health_details = "; ".join(
+            f"{name}: {checks[name].message if name in checks else 'check unavailable'}"
+            for name in sorted(failed_checks)
+        )
+        failure_detail = verification_error or ("Health checks failed: " + health_details)
+        return _installer_failed(
+            "service/runtime health",
+            failure_detail,
+            sudo_executable,
+            cleanup_units,
+            stop_services=bool(cleanup_units),
+        )
 
     print("ROCKS READY")
     if final_url:
@@ -432,10 +532,40 @@ def _run_installer(args: argparse.Namespace) -> int:
     return 0
 
 
+def _installer_failed(
+    component: str,
+    detail: str,
+    sudo_executable: str,
+    units: list[str],
+    *,
+    exit_code: int = 1,
+    stop_services: bool = False,
+) -> int:
+    if units and stop_services:
+        try:
+            subprocess.run([sudo_executable, "-n", "systemctl", "stop", *units], check=False, capture_output=True, text=True)
+        except OSError:
+            pass
+    print("INSTALLATION FAILED: ROCKS installation could not be completed.", file=sys.stderr)
+    print(f"Failed component: {component}", file=sys.stderr)
+    print(detail, file=sys.stderr)
+    print("Diagnostics:", file=sys.stderr)
+    print("  ./.venv/bin/rocks health verbose", file=sys.stderr)
+    print("  ./.venv/bin/rocks service status", file=sys.stderr)
+    print("  journalctl -u rocks-edge.service -u rocks-hub.service --no-pager -n 50", file=sys.stderr)
+    return exit_code
+
+
 def _setup_config(args: argparse.Namespace) -> int:
     config_path = Path(args.config_path) if args.config_path else Path(get_config_path())
     if config_path.resolve() == DEFAULT_CONFIG_TEMPLATE_PATH.resolve():
         raise ValueError("The tracked example configuration is read-only; choose a separate config path.")
+    if (
+        args.hub_port is not None
+        and args.dashboard_port is not None
+        and args.hub_port != args.dashboard_port
+    ):
+        raise ValueError("The Hub API and Dashboard share one listener; --hub-port and --dashboard-port must match.")
     if args.check:
         config = load_config(config_path)
         _validate_setup_config(config)
@@ -488,7 +618,8 @@ def _setup_config(args: argparse.Namespace) -> int:
         if mode in {"edge", "all-in-one"}:
             config["edge"]["sensor_id"] = _prompt_value("Edge sensor ID", default=str(config["edge"].get("sensor_id", "ROCKS-EDGE-01")))
             config["edge"]["interface"] = _choose_interface(str(config["edge"].get("interface", "")))
-            config["edge"]["hub_url"] = _prompt_value("Hub URL", default=str(config["edge"].get("hub_url", "http://127.0.0.1:8000")))
+            if mode == "edge":
+                config["edge"]["hub_url"] = _prompt_value("Hub URL", default=str(config["edge"].get("hub_url", "http://127.0.0.1:8000")))
             if mode == "edge":
                 config["hub"]["api_key"] = _prompt_value("Edge API key", hide=True) or str(config["hub"].get("api_key", ""))
             config["edge"]["send_interval_seconds"] = float(
@@ -497,8 +628,8 @@ def _setup_config(args: argparse.Namespace) -> int:
         if mode in {"hub", "all-in-one"}:
             if mode == "hub":
                 config["hub"]["url"] = _prompt_value("Hub URL", default=str(config["hub"].get("url", "http://127.0.0.1:8000")))
-            config["hub"]["host"] = _prompt_value("Hub bind host", default=str(config["hub"].get("host", "127.0.0.1")))
-            config["hub"]["port"] = int(_prompt_value("Hub bind port", default=str(config["hub"].get("port", 8000))))
+            bind_host = _prompt_value("Hub and Dashboard bind host", default=str(config["dashboard"].get("host", "127.0.0.1")))
+            config["hub"]["host"] = bind_host
             config["storage"]["hub_database"] = _prompt_value(
                 "Hub SQLite database path", default=str(config["storage"].get("hub_database") or data_dir() / "rocks-hub.db")
             )
@@ -509,8 +640,14 @@ def _setup_config(args: argparse.Namespace) -> int:
                 raise ValueError("A non-empty dashboard password must be entered identically twice.")
             config["dashboard"]["admin_password_hash"] = hash_password(password)
             config["dashboard"]["session_secret"] = str(config["dashboard"].get("session_secret") or secrets.token_urlsafe(48))
-            config["dashboard"]["host"] = _prompt_value("Dashboard bind host", default=str(config["dashboard"].get("host", "127.0.0.1")))
-            config["dashboard"]["port"] = int(_prompt_value("Dashboard bind port", default=str(config["dashboard"].get("port", 8000))))
+            config["dashboard"]["host"] = bind_host
+            shared_port = int(_prompt_value("Hub and Dashboard port", default=str(config["dashboard"].get("port", config["hub"].get("port", 8000)))))
+            config["hub"]["port"] = shared_port
+            config["dashboard"]["port"] = shared_port
+            if mode == "all-in-one":
+                local_host = "127.0.0.1" if bind_host in {"", "0.0.0.0", "::"} else bind_host
+                config["edge"]["hub_url"] = f"http://{local_host}:{shared_port}"
+                config["hub"]["url"] = config["edge"]["hub_url"]
     else:
         if mode in {"edge", "all-in-one"}:
             config["edge"]["sensor_id"] = str(args.sensor_id if args.sensor_id is not None else config["edge"].get("sensor_id", "")).strip()
@@ -522,14 +659,21 @@ def _setup_config(args: argparse.Namespace) -> int:
         if mode in {"hub", "all-in-one"}:
             config["hub"]["url"] = str(args.hub_url or config["hub"].get("url") or "http://127.0.0.1:8000").strip()
             config["hub"]["host"] = str(args.hub_host or config["hub"].get("host", "127.0.0.1")).strip()
-            config["hub"]["port"] = args.hub_port if args.hub_port is not None else config["hub"].get("port", 8000)
+            shared_port = (
+                args.dashboard_port
+                if args.dashboard_port is not None
+                else args.hub_port
+                if args.hub_port is not None
+                else config["dashboard"].get("port", config["hub"].get("port", 8000))
+            )
+            config["hub"]["port"] = shared_port
             config["storage"]["hub_database"] = str(args.hub_database or config["storage"].get("hub_database") or data_dir() / "rocks-hub.db").strip()
             config["dashboard"]["admin_username"] = str(args.dashboard_username if args.dashboard_username is not None else config["dashboard"].get("admin_username", "")).strip()
             if args.dashboard_password:
                 config["dashboard"]["admin_password_hash"] = hash_password(args.dashboard_password)
             config["dashboard"]["session_secret"] = str(args.session_secret or config["dashboard"].get("session_secret") or secrets.token_urlsafe(48)).strip()
             config["dashboard"]["host"] = str(args.dashboard_host or config["dashboard"].get("host", "127.0.0.1")).strip()
-            config["dashboard"]["port"] = args.dashboard_port if args.dashboard_port is not None else config["dashboard"].get("port", 8000)
+            config["dashboard"]["port"] = shared_port
 
     if mode in {"edge", "all-in-one"}:
         config["edge"]["enabled"] = True
@@ -539,7 +683,13 @@ def _setup_config(args: argparse.Namespace) -> int:
     if mode in {"hub", "all-in-one"}:
         config["hub"]["enabled"] = True
         config["dashboard"]["enabled"] = True
-        config["hub"]["url"] = str(config["hub"].get("url") or "http://127.0.0.1:8000").strip()
+        if mode == "all-in-one":
+            local_host = "127.0.0.1" if config["dashboard"].get("host") in {"", "0.0.0.0", "::"} else str(config["dashboard"].get("host"))
+            local_url = service_base_url(local_host, int(config["dashboard"]["port"]))
+            config["hub"]["url"] = local_url
+            config["edge"]["hub_url"] = local_url
+        else:
+            config["hub"]["url"] = str(config["hub"].get("url") or "http://127.0.0.1:8000").strip()
         config.setdefault("ml", {})["enabled"] = True
         config.setdefault("alerts", {})["enabled"] = True
     else:
@@ -652,8 +802,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             return _run_installer(args)
         except (ValueError, FileNotFoundError) as exc:
-            print(f"ROCKS installer error: {exc}", file=sys.stderr)
-            return 2
+            return _installer_failed(
+                "preflight/configuration",
+                str(exc),
+                shutil.which("sudo") or "sudo",
+                [],
+                exit_code=2,
+            )
 
     if args.command == "logs":
         print("ROCKS logs are emitted through the configured Python logger and systemd journal when services run.")
@@ -727,7 +882,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if args.service_command == "install":
                 installed = manager.install()
-                print("Installed and started: " + ", ".join(installed))
+                print("Installed service units; systemd accepted enable/start requests: " + ", ".join(installed))
+                print("Runtime state is not confirmed by the start request; run 'rocks service verify' or 'rocks install' for health verification.")
                 log_units = " ".join(f"-u {unit_name}" for unit_name in installed)
                 print(f"Logs: journalctl {log_units} -f")
                 return 0
@@ -742,6 +898,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.service_command == "status":
                 for unit_name, active, enabled in manager.status():
                     print(f"{unit_name}: {active} (enabled: {enabled})")
+                return 0
+            if args.service_command == "verify":
+                for unit_name, properties in manager.verify():
+                    print(f"{unit_name}: {properties['ActiveState']}/{properties['SubState']} (enabled: {properties['UnitFileState']})")
                 return 0
         except ServiceManagerError as exc:
             print(f"ROCKS service error: {exc}", file=sys.stderr)

@@ -1,0 +1,157 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.topbar,
+.topbar > div,
+.page-nav,
+.shell,
+.panel,
+.card,
+.grid-two,
+.cards,
+.section-heading,
+.fleet-alert-list li,
+.fleet-event-list li,
+.health-list li,
+.case-list li,
+.case-current,
+.analyst-notes,
+.timeline,
+.timeline-event,
+.evidence-block {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.topbar {
+  flex-wrap: wrap;
+}
+
+h1,
+h2,
+h3,
+p,
+small,
+strong,
+a,
+code,
+pre,
+time,
+th,
+td,
+dt,
+dd,
+label,
+.pill,
+.notice,
+.error {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.card strong {
+  max-width: 100%;
+}
+
+.pill {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  vertical-align: middle;
+}
+
+.table-scroll {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-gutter: stable;
+}
+
+.table-scroll table {
+  min-width: 720px;
+}
+
+.table-scroll th,
+.table-scroll td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.detail-grid {
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+}
+
+.detail-grid dt,
+.detail-grid dd,
+.note-list li,
+.note-list li > div,
+.note-list li > p {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.evidence-block pre {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+input,
+textarea,
+select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 768px) {
+  .topbar {
+    gap: 14px;
+  }
+
+  .page-nav {
+    width: 100%;
+  }
+
+  .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .table-scroll table {
+    min-width: 680px;
+  }
+}
+
+@media (max-width: 480px) {
+  .topbar h1 {
+    font-size: 20px;
+  }
+
+  .cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .card,
+  .panel,
+  .login-panel {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .case-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

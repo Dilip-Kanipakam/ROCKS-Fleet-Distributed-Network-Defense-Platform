@@ -30,14 +30,20 @@ class HubService:
         self.storage = storage
         self.registry = EdgeRegistry(storage)
         self.storage.initialize()
-        ml_config = get_ml_config()
-        self.ml = MLService(
-            storage,
-            ml_config.model_path,
-            ml_config.minimum_samples,
-            ml_config.model_version,
-        ) if ml_config.enabled else None
         self._logger = configure_logging()
+        ml_config = get_ml_config()
+        self.ml = None
+        if ml_config.enabled:
+            try:
+                self.ml = MLService(
+                    storage,
+                    ml_config.model_path,
+                    ml_config.minimum_samples,
+                    ml_config.model_version,
+                )
+            except Exception:
+                self._logger.warning("ML analysis is disabled because the model could not be initialized.")
+                self.ml = None
         self.email_notifications = email_notifications or EmailNotificationService(get_email_config())
         self.detection = DetectionEngine(get_detection_config())
         alert_config = get_alert_config()

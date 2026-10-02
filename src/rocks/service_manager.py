@@ -3,6 +3,7 @@ from __future__ import annotations
 import getpass
 import os
 import pwd
+import re
 import shutil
 import stat
 import subprocess
@@ -42,7 +43,40 @@ def _systemd_quote(value: str | Path) -> str:
 
 
 def _systemd_path(value: str | Path) -> str:
-    return str(value).replace("%", "%%").replace("\\", "\\x5c").replace('"', "\\x22").replace(" ", "\\x20")
+    return (
+        str(value)
+        .replace("%", "%%")
+        .replace("\\", "\\x5c")
+        .replace('"', "\\x22")
+        .replace(" ", "\\s")
+    )
+
+
+def _systemd_environment_file_path(value: str | Path) -> str:
+    return str(value).replace("%", "%%").replace("\\", "\\\\").replace(" ", "\\ ")
+
+
+def _resolve_service_python(
+    application_directory: str | Path,
+    python_executable: str | Path | None = None,
+) -> Path:
+    root = Path(application_directory).expanduser().absolute()
+    venv_python = root / ".venv" / "bin" / "python"
+    if python_executable is not None:
+        explicit_python = Path(python_executable).expanduser().absolute()
+        if explicit_python == venv_python:
+            return venv_python
+        raise ServiceManagerError(
+            "Systemd services must use the ROCKS installation virtual environment interpreter; "
+            f"refusing {explicit_python}."
+        )
+    if venv_python.is_file():
+        return venv_python
+
+    raise ServiceManagerError(
+        f"ROCKS services require the installation virtual environment at {venv_python}; "
+        "run install-rocks.sh or create the project .venv before installing services."
+    )
 
 
 def _configured_write_directories(config: dict[str, Any], root: Path) -> list[Path]:
@@ -63,6 +97,32 @@ def _configured_write_directories(config: dict[str, Any], root: Path) -> list[Pa
     return sorted(directories)
 
 
+def _ensure_configured_write_directories(config: dict[str, Any], root: Path, service_user: str) -> None:
+    try:
+        account = pwd.getpwnam(service_user)
+    except KeyError as exc:
+        raise ServiceManagerError(f"Service account {service_user!r} does not exist.") from exc
+
+    for directory in _configured_write_directories(config, root):
+        missing: list[Path] = []
+        current = directory
+        while not current.exists():
+            missing.append(current)
+            parent = current.parent
+            if parent == current:
+                raise ServiceManagerError(f"Unable to find an existing parent for writable directory {directory}.")
+            current = parent
+        if not current.is_dir():
+            raise ServiceManagerError(f"Configured writable path parent is not a directory: {current}.")
+        try:
+            directory.mkdir(parents=True, exist_ok=True, mode=0o750)
+            for created in reversed(missing):
+                os.chown(created, account.pw_uid, account.pw_gid)
+                os.chmod(created, 0o750)
+        except OSError as exc:
+            raise ServiceManagerError(f"Unable to prepare writable directory {directory}: {exc}") from exc
+
+
 def render_units(
     config: dict[str, Any],
     *,
@@ -74,9 +134,9 @@ def render_units(
     units = deployment_units(config)
     active_config_path = Path(config_path or get_config_path()).expanduser().resolve()
     root = Path(application_directory or project_root()).resolve()
-    python = Path(python_executable or sys.executable).resolve()
+    python = _resolve_service_python(root, python_executable)
     user = service_user or getpass.getuser()
-    writable = " ".join(_systemd_path(path) for path in _configured_write_directories(config, root))
+    writable = " ".join(_systemd_quote(path) for path in _configured_write_directories(config, root))
 
     def unit_text(description: str, command: str, *, capture: bool = False) -> str:
         capabilities = ""
@@ -87,13 +147,15 @@ def render_units(
             f"Description={description}\n"
             "After=network-online.target\n"
             "Wants=network-online.target\n\n"
+            "StartLimitIntervalSec=60s\n"
+            "StartLimitBurst=3\n\n"
             "[Service]\n"
             "Type=simple\n"
             f"User={user}\n"
-            f"WorkingDirectory={_systemd_path(root)}\n"
+            f"WorkingDirectory={str(root).replace('%', '%%')}\n"
             f"Environment=ROCKS_CONFIG_PATH={_systemd_quote(active_config_path)}\n"
-            f"EnvironmentFile=-{_systemd_path(root / '.env')}\n"
-            f"ExecStart={_systemd_quote(python)} -m rocks {command}\n"
+            f"EnvironmentFile=-{_systemd_environment_file_path(root / '.env')}\n"
+            f"ExecStart=/usr/bin/env {_systemd_quote(python)} -m rocks {command}\n"
             "Restart=on-failure\n"
             "RestartSec=5s\n"
             "NoNewPrivileges=true\n"
@@ -133,16 +195,20 @@ class ServiceManager:
         self,
         *,
         config_path: str | Path | None = None,
+        application_directory: str | Path | None = None,
         unit_directory: str | Path = "/etc/systemd/system",
         systemctl: str | None = None,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         systemd_check: Callable[[], bool] = systemd_available,
+        proc_root: str | Path = "/proc",
     ) -> None:
         self.config_path = Path(config_path or get_config_path()).expanduser().resolve()
+        self.application_directory = Path(application_directory or project_root()).expanduser().resolve()
         self.unit_directory = Path(unit_directory)
         self.systemctl = systemctl or shutil.which("systemctl") or "systemctl"
         self.runner = runner
         self.systemd_check = systemd_check
+        self.proc_root = Path(proc_root)
 
     def _load_config(self) -> dict[str, Any]:
         if not self.config_path.is_file():
@@ -169,8 +235,7 @@ class ServiceManager:
         rendered = render_units(
             config,
             config_path=self.config_path,
-            application_directory=project_root(),
-            python_executable=sys.executable,
+            application_directory=self.application_directory,
             service_user=_effective_service_user(),
         )
         output = Path(output_directory)
@@ -212,8 +277,22 @@ class ServiceManager:
     def install(self) -> list[str]:
         self._require_systemd()
         self._require_root()
-        units = deployment_units(self._load_config())
+        config = self._load_config()
+        units = deployment_units(config)
+        service_user = _effective_service_user()
+        _ensure_configured_write_directories(config, self.application_directory, service_user)
+        previous_contents = {
+            unit_name: (self.unit_directory / unit_name).read_text(encoding="utf-8")
+            if (self.unit_directory / unit_name).is_file()
+            else None
+            for unit_name in units
+        }
         written = self.generate(self.unit_directory)
+        changed_units = {
+            path.name
+            for path in written
+            if previous_contents.get(path.name) != path.read_text(encoding="utf-8")
+        }
         try:
             for unit_name in KNOWN_UNITS:
                 if unit_name not in units:
@@ -223,11 +302,83 @@ class ServiceManager:
                         stale_path.unlink()
             self._systemctl("daemon-reload")
             for unit_name in units:
-                self._systemctl("enable", "--now", unit_name)
+                if (
+                    unit_name in changed_units
+                    and previous_contents.get(unit_name) is not None
+                    and self._unit_active(unit_name)
+                ):
+                    self._systemctl("enable", unit_name)
+                    self._systemctl("restart", unit_name)
+                else:
+                    self._systemctl("enable", "--now", unit_name)
         except ServiceManagerError:
             self._systemctl("daemon-reload", check=False)
             raise
         return [path.name for path in written]
+
+    def _unit_properties(self, unit_name: str) -> dict[str, str]:
+        result = self._systemctl(
+            "show",
+            "--no-page",
+            "--property=LoadState,ActiveState,SubState,UnitFileState,ExecStart,User,AmbientCapabilities,CapabilityBoundingSet,MainPID",
+            unit_name,
+            check=False,
+        )
+        properties: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                properties[key] = value
+        return properties
+
+    def _unit_active(self, unit_name: str) -> bool:
+        return self._unit_properties(unit_name).get("ActiveState") == "active"
+
+    def verify(self) -> list[tuple[str, dict[str, str]]]:
+        self._require_systemd()
+        config = self._load_config()
+        units = deployment_units(config)
+        expected_python = str(_resolve_service_python(self.application_directory))
+        expected_user = _effective_service_user()
+        verified: list[tuple[str, dict[str, str]]] = []
+        for unit_name in units:
+            properties = self._unit_properties(unit_name)
+            if properties.get("LoadState") != "loaded":
+                raise ServiceManagerError(f"{unit_name} is not loaded by systemd.")
+            if properties.get("UnitFileState") not in {"enabled", "enabled-runtime"}:
+                raise ServiceManagerError(f"{unit_name} is not enabled.")
+            if properties.get("ActiveState") != "active" or properties.get("SubState") != "running":
+                state = f"{properties.get('ActiveState', 'unknown')}/{properties.get('SubState', 'unknown')}"
+                raise ServiceManagerError(f"{unit_name} is not running (state: {state}).")
+            exec_start = properties.get("ExecStart", "")
+            path_match = re.search(r"(?:^|[\s{;])path=([^;}]+)", exec_start)
+            argv_match = re.search(r"(?:^|[;{])\s*argv\[\]=(.+?)(?:\s*;|})", exec_start)
+            configured_launcher = path_match.group(1).strip().strip('"') if path_match else ""
+            configured_argv = argv_match.group(1) if argv_match else ""
+            interpreter_matches = (
+                configured_launcher == "/usr/bin/env"
+                and configured_argv.startswith(f"/usr/bin/env {expected_python} -m rocks ")
+            )
+            if not interpreter_matches:
+                raise ServiceManagerError(f"{unit_name} is not configured to use the ROCKS virtual environment interpreter.")
+            main_pid = properties.get("MainPID", "")
+            if not main_pid.isdigit() or int(main_pid) <= 0:
+                raise ServiceManagerError(f"{unit_name} has no running main process.")
+            try:
+                process_argv = (self.proc_root / main_pid / "cmdline").read_bytes().split(b"\0")
+                process_python = process_argv[0].decode("utf-8", errors="replace")
+            except OSError as exc:
+                raise ServiceManagerError(f"Unable to verify the running interpreter for {unit_name}.") from exc
+            if process_python != expected_python:
+                raise ServiceManagerError(f"{unit_name} process is not running with the ROCKS virtual environment interpreter.")
+            if properties.get("User") != expected_user:
+                raise ServiceManagerError(f"{unit_name} is not running as the configured non-root service user.")
+            if unit_name == EDGE_UNIT:
+                for capability_property in ("AmbientCapabilities", "CapabilityBoundingSet"):
+                    if "CAP_NET_RAW" not in properties.get(capability_property, "").upper():
+                        raise ServiceManagerError(f"{unit_name} is missing required {capability_property}=CAP_NET_RAW.")
+            verified.append((unit_name, properties))
+        return verified
 
     def uninstall(self) -> list[str]:
         self._require_systemd()
@@ -254,18 +405,7 @@ class ServiceManager:
         units = deployment_units(self._load_config())
         statuses = []
         for unit_name in units:
-            result = self._systemctl(
-                "show",
-                "--no-page",
-                "--property=LoadState,ActiveState,SubState,UnitFileState",
-                unit_name,
-                check=False,
-            )
-            properties = {}
-            for line in result.stdout.splitlines():
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    properties[key] = value
+            properties = self._unit_properties(unit_name)
             load_state = properties.get("LoadState", "not-found")
             active = properties.get("ActiveState", "unknown")
             enabled = properties.get("UnitFileState", "unknown")

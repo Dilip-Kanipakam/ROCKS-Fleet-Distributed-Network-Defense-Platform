@@ -86,7 +86,14 @@ cd Project-RocksFleet
 ./install-rocks.sh
 ```
 
-The script checks Linux, Python 3.10+, systemd, and sudo; creates `.venv`; installs ROCKS and its Python dependencies; then launches the guided configuration wizard. It preserves and validates an existing config unless `--force` is explicitly supplied. After setup, it uses the existing systemd service manager, which grants `CAP_NET_RAW` to the Edge service through the unit rather than running the application as root, enables and starts the configured services, runs health checks, and prints `ROCKS READY` plus the dashboard URL. It does not fetch remote installer scripts or modify switches, routers, firewalls, or network topology. Run it as your normal account; sudo is requested only for OS package/service operations.
+The script checks Linux, Python 3.10+, systemd, and sudo; creates or reuses `.venv`; installs ROCKS and its Python dependencies; validates the installed package; then launches the guided configuration wizard. It preserves and validates an existing config unless `--force` is explicitly supplied. After setup, it uses the existing systemd service manager, which grants `CAP_NET_RAW` to the Edge service through the unit rather than running the application as root, enables and starts the configured services, verifies their venv interpreter and service state, runs health checks, and prints `ROCKS READY` plus the dashboard URL. It does not fetch remote installer scripts or modify switches, routers, firewalls, or network topology. Run it as your normal account; sudo is requested only for OS package/service operations.
+
+After installation, use the repository launcher without activating Python:
+
+```bash
+./rocks health
+./rocks service status
+```
 
 For an existing validated config, the CLI can complete service installation without prompting:
 

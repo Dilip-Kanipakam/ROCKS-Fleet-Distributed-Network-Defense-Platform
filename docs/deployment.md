@@ -2,6 +2,12 @@
 
 This document separates reproducible development/demo use from deployment considerations. ROCKS is Linux-first; live capture and the optional systemd workflow depend on operating-system permissions and an authorized observation point.
 
+## One-command Linux installation
+
+For an all-in-one host, run `./install-rocks.sh` as a normal user from the repository root. The installer creates or reuses `.venv`, installs and validates ROCKS dependencies, starts the guided setup, installs the existing systemd units through sudo, verifies the service units and health endpoints, then prints `ROCKS READY` and the Dashboard URL. It validates and preserves an existing config unless `--force` is explicitly supplied. No manual venv activation, service-file editing, or `setcap` step is required. Afterward use `./rocks health`, `./rocks service status`, and other `./rocks ...` commands without activating the venv.
+
+The Hub API and Dashboard routes are mounted by the same FastAPI app and therefore share one listener and one configured port. The setup wizard asks once for that shared port and keeps the all-in-one Edge URL aligned. If the port is occupied by another process, installation stops before attempting to start services. Systemd uses the repository `.venv/bin/python` launcher and grants only the Edge service `CAP_NET_RAW`; services run as the installing non-root account.
+
 ## Local development and demo
 
 ```bash
@@ -33,7 +39,7 @@ Start the combined process with:
 rocks dashboard run
 ```
 
-The default dashboard URL is `http://127.0.0.1:8000/dashboard`. Bind to a controlled address and protect the connection with the surrounding host/network controls when exposing it beyond localhost.
+The default dashboard URL is `http://127.0.0.1:8000/dashboard`. The Hub API and Dashboard share that bind address and port because they are served by the same application. Bind to a controlled address and protect the connection with the surrounding host/network controls when exposing it beyond localhost.
 
 ## Distributed deployment
 
@@ -79,13 +85,14 @@ rocks service status
 Installation and start/stop operations require administrator approval and systemd availability:
 
 ```bash
-sudo rocks service install
-rocks service status
+sudo env ROCKS_CONFIG_PATH="$PWD/config/config.yaml" "$PWD/.venv/bin/python" -m rocks service install
+./rocks service verify
+./rocks service status
 journalctl -u rocks-hub.service -f
 journalctl -u rocks-edge.service -f
 ```
 
-The service manager does not configure network visibility or copy credentials into unit files. Review the generated units and local configuration before installation.
+Run `rocks service install` through the existing installer for the normal deployment path; it invokes the venv interpreter under sudo and preserves the original non-root service user. Unit generation resolves the installation venv from the repository root, even when called from a system Python, and fails rather than generating a system-Python `ExecStart` if that environment is missing. `rocks service verify` checks loaded/enabled/running state, the configured venv command and process, service user, and Edge `CAP_NET_RAW`. The service manager does not configure network visibility or copy credentials into unit files.
 
 ## Prototype, development, and deployment boundaries
 

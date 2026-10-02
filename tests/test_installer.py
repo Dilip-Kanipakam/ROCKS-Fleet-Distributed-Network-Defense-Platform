@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -10,12 +11,14 @@ import pytest
 
 from rocks import cli
 from rocks.cli import main
-from rocks.config import write_config
+from rocks.config import load_config, write_config
 from rocks.health import HealthCheck, HealthReport, HealthStatus
 from rocks.installer import (
     dashboard_url,
     detect_platform,
     interface_choice,
+    listener_port_available,
+    physical_interfaces,
     python_version_supported,
     redact_secret,
     service_install_command,
@@ -47,6 +50,12 @@ def _healthy_report() -> HealthReport:
     return HealthReport(checks, HealthStatus.HEALTHY, "hub")
 
 
+def _healthy_edge_report() -> HealthReport:
+    names = ("configuration", "edge_service", "edge_storage", "edge_buffer", "hub_api")
+    checks = tuple(HealthCheck(name, HealthStatus.OK, "ok") for name in names)
+    return HealthReport(checks, HealthStatus.HEALTHY, "edge")
+
+
 def _mock_installer_environment(monkeypatch, *, config_path: Path, health_reports=None):
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(cli, "detect_platform", lambda: "linux")
@@ -56,7 +65,14 @@ def _mock_installer_environment(monkeypatch, *, config_path: Path, health_report
         def __init__(self, **_kwargs):
             self.systemd_check = lambda: True
 
+        def status(self):
+            return []
+
+        def verify(self):
+            return []
+
     monkeypatch.setattr(cli, "ServiceManager", MockServiceManager)
+    monkeypatch.setattr(cli, "listener_port_available", lambda _host, _port: True)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None)
     commands = []
 
@@ -106,6 +122,22 @@ def test_interface_choice_rejects_explicit_empty_list():
         interface_choice([])
 
 
+def test_physical_interfaces_omit_loopback_and_virtual_devices(tmp_path):
+    sysfs = tmp_path / "sys-class-net"
+    device = sysfs / "enp2s0"
+    (device / "device").mkdir(parents=True)
+    (device / "operstate").write_text("up\n", encoding="ascii")
+    assert physical_interfaces(["lo", "docker0", "veth123", "enp2s0"], sysfs_root=sysfs) == ["enp2s0"]
+
+
+def test_listener_port_probe_detects_occupied_and_free_ports():
+    with __import__("socket").socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        assert not listener_port_available("127.0.0.1", port)
+    assert listener_port_available("127.0.0.1", port)
+
+
 def test_redact_secret_masks_sensitive_value():
     assert redact_secret("super-secret") != "super-secret"
     assert redact_secret("abc12345")[-2:] == "45"
@@ -146,6 +178,8 @@ def test_installer_runs_configuration_service_and_health_then_prints_ready(tmp_p
     assert "Dashboard URL: http://127.0.0.1:8000/dashboard" in output
     assert len(commands) == 1
     assert commands[0][-2:] == ["service", "install"]
+    assert commands[0][3] == sys.executable
+    assert "/.venv/bin/python" in commands[0][3]
     assert "password-hash-never-print" not in output
     assert "session-secret-never-print" not in output
 
@@ -174,6 +208,52 @@ def test_installer_invokes_interactive_setup_for_first_install(tmp_path, monkeyp
     assert len(commands) == 1
 
 
+def test_fresh_all_in_one_install_runs_real_wizard_without_manual_steps(tmp_path, monkeypatch, capsys):
+    import builtins
+
+    config_path = tmp_path / "fresh config.yaml"
+    commands = _mock_installer_environment(monkeypatch, config_path=config_path)
+    healthy_names = (
+        "configuration", "edge_service", "edge_storage", "edge_buffer",
+        "hub_service", "hub_database", "hub_api", "dashboard",
+    )
+    monkeypatch.setattr(
+        cli,
+        "HealthChecker",
+        lambda **_kwargs: type("Checker", (), {"run": lambda _self: HealthReport(
+            tuple(HealthCheck(name, HealthStatus.OK, "ok") for name in healthy_names),
+            HealthStatus.HEALTHY,
+            "all-in-one",
+        )})(),
+    )
+    monkeypatch.setattr(cli.sys, "stdin", type("Terminal", (), {"isatty": lambda _self: True})())
+    monkeypatch.setattr(cli.socket, "if_nameindex", lambda: [(1, "eth-test")])
+    answers = iter([
+        "ROCKS-FRESH-01", "1", "5", "127.0.0.1", str(tmp_path / "hub.db"),
+        "administrator", "18780",
+    ])
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(answers))
+    monkeypatch.setattr(cli.getpass, "getpass", lambda _prompt: "local-test-password")
+
+    result = main(["install", "--config-path", str(config_path), "--mode", "all-in-one"])
+
+    output = capsys.readouterr().out
+    config = load_config(config_path)
+    assert result == 0
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert config["deployment"]["mode"] == "all-in-one"
+    assert config["hub"]["api_key"]
+    assert config["dashboard"]["session_secret"]
+    assert config["hub"]["port"] == config["dashboard"]["port"] == 18780
+    assert config["edge"]["hub_url"] == "http://127.0.0.1:18780"
+    assert "local-test-password" not in output
+    assert config["hub"]["api_key"] not in output
+    assert config["dashboard"]["session_secret"] not in output
+    assert "ROCKS READY" in output
+    assert "Dashboard URL: http://127.0.0.1:18780/dashboard" in output
+    assert commands[0][0:3] == ["/usr/bin/sudo", "env", f"ROCKS_CONFIG_PATH={config_path.resolve()}"]
+
+
 def test_installer_does_not_report_ready_when_required_health_fails(tmp_path, monkeypatch, capsys):
     config_path = tmp_path / "config.yaml"
     write_config(_hub_config(tmp_path / "hub.db"), config_path)
@@ -191,7 +271,98 @@ def test_installer_does_not_report_ready_when_required_health_fails(tmp_path, mo
     captured = capsys.readouterr()
     assert result == 1
     assert "ROCKS READY" not in captured.out
-    assert "health checks did not pass" in captured.err
+    assert "Failed component: service/runtime health" in captured.err
+    assert "./.venv/bin/rocks health verbose" in captured.err
+
+
+def test_edge_install_requires_reachable_remote_hub(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "edge.yaml"
+    config = _hub_config(tmp_path / "hub.db")
+    config["deployment"]["mode"] = "edge"
+    config["edge"] = {
+        "enabled": True,
+        "sensor_id": "EDGE-01",
+        "interface": "eth0",
+        "hub_url": "http://hub.example:8000",
+        "send_interval_seconds": 5,
+    }
+    config["hub"]["api_key"] = "edge-api-secret"
+    write_config(config, config_path)
+    checks = tuple(
+        HealthCheck(name, HealthStatus.WARNING if name == "hub_api" else HealthStatus.OK, "unavailable")
+        for name in ("configuration", "edge_service", "edge_storage", "edge_buffer", "hub_api")
+    )
+    _mock_installer_environment(
+        monkeypatch,
+        config_path=config_path,
+        health_reports=[HealthReport(checks, HealthStatus.DEGRADED, "edge")],
+    )
+    monkeypatch.setattr(cli, "_available_interfaces", lambda: ["eth0"])
+    times = iter((0.0, 31.0))
+    monkeypatch.setattr(cli.time, "monotonic", lambda: next(times))
+
+    result = main(["install", "--config-path", str(config_path), "--non-interactive"])
+
+    output = capsys.readouterr()
+    assert result == 1
+    assert "ROCKS READY" not in output.out
+    assert "hub_api" in output.err
+
+
+def test_installer_reports_service_verification_failure_and_stops_units(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "config.yaml"
+    write_config(_hub_config(tmp_path / "hub.db"), config_path)
+    commands = _mock_installer_environment(monkeypatch, config_path=config_path)
+
+    class FailedServiceManager:
+        def __init__(self, **_kwargs):
+            self.systemd_check = lambda: True
+
+        def status(self):
+            return []
+
+        def verify(self):
+            raise cli.ServiceManagerError("rocks-hub.service is not running (state: failed/failed).")
+
+    monkeypatch.setattr(cli, "ServiceManager", FailedServiceManager)
+    times = iter((0.0, 1.0, 31.0))
+    monkeypatch.setattr(cli.time, "monotonic", lambda: next(times))
+
+    result = main(["install", "--config-path", str(config_path), "--non-interactive"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "ROCKS READY" not in captured.out
+    assert "INSTALLATION FAILED" in captured.err
+    assert "rocks-hub.service is not running" in captured.err
+    assert commands[-1][1:5] == ["-n", "systemctl", "stop", "rocks-hub.service"]
+
+
+def test_installer_does_not_stop_previously_active_unit_on_failed_rerun(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "config.yaml"
+    write_config(_hub_config(tmp_path / "hub.db"), config_path)
+    commands = _mock_installer_environment(monkeypatch, config_path=config_path)
+
+    class PreviouslyActiveManager:
+        def __init__(self, **_kwargs):
+            self.systemd_check = lambda: True
+
+        def status(self):
+            return [("rocks-hub.service", "active", "enabled")]
+
+        def verify(self):
+            raise cli.ServiceManagerError("rocks-hub.service is not running (state: failed/failed).")
+
+    monkeypatch.setattr(cli, "ServiceManager", PreviouslyActiveManager)
+    times = iter((0.0, 31.0))
+    monkeypatch.setattr(cli.time, "monotonic", lambda: next(times))
+
+    result = main(["install", "--config-path", str(config_path), "--non-interactive"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "INSTALLATION FAILED" in captured.err
+    assert not any("systemctl" in command and "stop" in command for command in commands)
 
 
 def test_installer_rejects_mode_mismatch_without_overwriting_config(tmp_path, monkeypatch, capsys):
@@ -205,6 +376,26 @@ def test_installer_rejects_mode_mismatch_without_overwriting_config(tmp_path, mo
     assert result == 2
     assert config_path.read_bytes() == original
     assert "pass --force" in capsys.readouterr().err
+
+
+def test_installer_fails_before_start_when_shared_listener_port_is_taken(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "config.yaml"
+    write_config(_hub_config(tmp_path / "hub.db"), config_path)
+    unhealthy_checks = tuple(
+        HealthCheck(name, HealthStatus.ERROR if name in {"hub_service", "hub_api"} else HealthStatus.OK, "check")
+        for name in ("configuration", "hub_service", "hub_database", "hub_api", "dashboard")
+    )
+    report = HealthReport(unhealthy_checks, HealthStatus.UNHEALTHY, "hub")
+    commands = _mock_installer_environment(monkeypatch, config_path=config_path, health_reports=[report])
+    monkeypatch.setattr(cli, "listener_port_available", lambda _host, _port: False)
+
+    result = main(["install", "--config-path", str(config_path), "--non-interactive"])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "Failed component: Hub/Dashboard port" in captured.err
+    assert "already in use" in captured.err
+    assert not commands
 
 
 def test_installer_refuses_root_execution(tmp_path, monkeypatch, capsys):
@@ -291,6 +482,7 @@ def test_shell_installer_creates_venv_installs_package_and_hands_off_to_guided_c
     assert "-m pip install -e" in calls
     assert "rocks install --mode hub" in calls
     assert "systemctl show-environment" in calls
+    assert f"venv-python -m pip install -e {sandbox}" in calls
 
 
 def test_install_help_lists_complete_install_controls(capsys):
@@ -302,3 +494,17 @@ def test_install_help_lists_complete_install_controls(capsys):
     assert "--config-path" in output
     assert "--non-interactive" in output
     assert "--dashboard-password" not in output
+
+
+def test_repository_launcher_runs_cli_without_activation():
+    repository = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [str(repository / "rocks"), "--version"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.startswith("ROCKS Fleet ")

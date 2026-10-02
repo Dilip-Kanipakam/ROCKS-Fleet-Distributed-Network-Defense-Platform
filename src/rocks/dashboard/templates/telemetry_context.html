@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Telemetry Investigation | ROCKS</title>
   <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+  <link rel="stylesheet" href="/dashboard/static/dashboard-overflow.css">
 </head>
 <body>
   <header class="topbar">
@@ -15,15 +16,15 @@
     <section class="panel">
       <p class="eyebrow">TRIGGERING TELEMETRY</p>
       <h2>{{ context.trigger.event_type }}</h2>
-      <table><tbody>
+      <div class="table-scroll"><table><tbody>
         {% for key, value in context.trigger.items() %}
         <tr><th>{{ key.replace('_', ' ')|title }}</th><td>{{ value if value is not none else '—' }}</td></tr>
         {% endfor %}
-      </tbody></table>
+      </tbody></table></div>
     </section>
     <section class="panel">
       <div class="section-heading"><div><p class="eyebrow">DEVICE CONTEXT</p><h2>Related recent telemetry</h2></div><span class="muted">{{ context.related|length }} records (maximum 50)</span></div>
-      <table>
+      <div class="table-scroll"><table>
         <thead><tr><th>Timestamp</th><th>Event</th><th>Sensor</th><th>Device</th><th>Source</th><th>Destination</th><th>Protocol</th><th>Ports</th></tr></thead>
         <tbody>
           {% for item in context.related %}
@@ -36,7 +37,7 @@
           <tr><td colspan="8" class="muted">No related telemetry available in the selected context.</td></tr>
           {% endfor %}
         </tbody>
-      </table>
+      </table></div>
       <p class="note">This view contains network metadata only. An anomaly is an investigation signal, not confirmation of an attack.</p>
     </section>
   </main>

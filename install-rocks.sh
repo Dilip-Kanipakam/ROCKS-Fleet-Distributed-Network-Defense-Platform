@@ -61,8 +61,23 @@ if [[ ! -x .venv/bin/python ]]; then
   trap - EXIT
 fi
 
+if ! "$ROOT_DIR/.venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 10) else 1)'; then
+  echo "The existing .venv uses Python older than 3.10; it was left untouched. Recreate it with a supported Python version, then rerun." >&2
+  exit 1
+fi
+
+if ! "$ROOT_DIR/.venv/bin/python" -m pip --version >/dev/null 2>&1; then
+  echo "Repairing pip inside .venv."
+  "$ROOT_DIR/.venv/bin/python" -m ensurepip --upgrade
+fi
+
 echo "Installing ROCKS and its Python dependencies into .venv."
 "$ROOT_DIR/.venv/bin/python" -m pip install -e "$ROOT_DIR"
+if ! "$ROOT_DIR/.venv/bin/python" -c 'import rocks; import fastapi; import scapy'; then
+  echo "ROCKS package validation failed after dependency installation." >&2
+  exit 1
+fi
+"$ROOT_DIR/.venv/bin/rocks" --version
 
 export ROCKS_CONFIG_PATH="${ROCKS_CONFIG_PATH:-$ROOT_DIR/config/config.yaml}"
 exec "$ROOT_DIR/.venv/bin/rocks" install "$@"

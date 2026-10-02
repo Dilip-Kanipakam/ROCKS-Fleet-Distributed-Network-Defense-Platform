@@ -43,6 +43,29 @@ def _available_interfaces() -> list[str]:
         return []
 
 
+def physical_interfaces(
+    interfaces: Iterable[str] | None = None,
+    *,
+    sysfs_root: str | Path = "/sys/class/net",
+) -> list[str]:
+    candidates = _available_interfaces() if interfaces is None else interfaces
+    virtual_prefixes = ("docker", "br-", "veth", "virbr", "tun", "tap", "wg", "podman", "cni")
+    root = Path(sysfs_root)
+    selected = []
+    for interface in candidates:
+        name = str(interface).strip()
+        if not name or name == "lo" or name.lower().startswith(virtual_prefixes):
+            continue
+        interface_path = root / name
+        try:
+            state = (interface_path / "operstate").read_text(encoding="ascii").strip()
+        except OSError:
+            continue
+        if state == "up" and (interface_path / "device").exists():
+            selected.append(name)
+    return selected
+
+
 def redact_secret(value: str | None, *, keep_tail: int = 2) -> str:
     if value is None:
         return ""
@@ -75,9 +98,39 @@ def service_install_command(
 
 
 def dashboard_url(host: str, port: int) -> str:
+    return f"{service_base_url(host, port)}/dashboard"
+
+
+def service_base_url(host: str, port: int) -> str:
     normalized_host = host.strip()
     if normalized_host in {"", "0.0.0.0", "::"}:
         normalized_host = "localhost"
     if ":" in normalized_host and not normalized_host.startswith("["):
         normalized_host = f"[{normalized_host}]"
-    return f"http://{normalized_host}:{port}/dashboard"
+    return f"http://{normalized_host}:{port}"
+
+
+def listener_port_available(host: str, port: int) -> bool:
+    normalized_host = host.strip()
+    if normalized_host in {"", "0.0.0.0"}:
+        family = socket.AF_INET
+        address = "0.0.0.0"
+    elif normalized_host == "::":
+        family = socket.AF_INET6
+        address = "::"
+    else:
+        try:
+            address_info = socket.getaddrinfo(normalized_host, port, type=socket.SOCK_STREAM)
+        except OSError:
+            return False
+        if not address_info:
+            return False
+        family, _, _, _, sockaddr = address_info[0]
+        address = sockaddr[0]
+
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as listener:
+            listener.bind((address, port))
+    except OSError:
+        return False
+    return True

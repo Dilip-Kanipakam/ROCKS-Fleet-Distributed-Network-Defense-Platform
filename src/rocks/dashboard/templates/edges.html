@@ -1,1 +1,16 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Edges | ROCKS</title><link rel="stylesheet" href="/dashboard/static/dashboard.css"></head><body><header class="topbar"><div><p class="eyebrow">ROCKS COMMAND CENTER</p><h1>Edge Sensors</h1></div><a class="ghost" href="/dashboard">Dashboard</a></header><main class="shell panel"><table><thead><tr><th>Sensor ID</th><th>Name</th><th>Status</th><th>Last Seen</th><th>Telemetry Count</th></tr></thead><tbody>{% for edge in edges %}<tr><td>{{ edge.sensor_id }}</td><td>{{ edge.name }}</td><td><span class="pill {{ edge.status|lower }}">{{ edge.status }}</span></td><td>{{ edge.last_seen or 'Never' }}</td><td>{{ edge.telemetry_count }}</td></tr>{% else %}<tr><td colspan="5" class="muted">No Edge sensors registered</td></tr>{% endfor %}</tbody></table></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Edges | ROCKS</title>
+	<link rel="stylesheet" href="/dashboard/static/dashboard.css">
+	<link rel="stylesheet" href="/dashboard/static/dashboard-overflow.css">
+</head>
+<body>
+	<header class="topbar"><div><p class="eyebrow">ROCKS COMMAND CENTER</p><h1>Edge Sensors</h1></div><a class="ghost" href="/dashboard">Dashboard</a></header>
+	<main class="shell panel">
+		<div class="table-scroll"><table><thead><tr><th>Sensor ID</th><th>Name</th><th>Status</th><th>Last Seen</th><th>Telemetry Count</th></tr></thead><tbody>{% for edge in edges %}<tr><td>{{ edge.sensor_id }}</td><td>{{ edge.name }}</td><td><span class="pill {{ edge.status|lower }}">{{ edge.status }}</span></td><td>{{ edge.last_seen or 'Never' }}</td><td>{{ edge.telemetry_count }}</td></tr>{% else %}<tr><td colspan="5" class="muted">No Edge sensors registered</td></tr>{% endfor %}</tbody></table></div>
+	</main>
+</body>
+</html>

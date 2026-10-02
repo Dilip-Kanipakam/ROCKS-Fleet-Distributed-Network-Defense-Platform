@@ -84,6 +84,49 @@ def test_edge_keys_are_sensor_scoped_and_admin_key_is_fleet_scoped(tmp_path, mon
     assert case_with_admin.status_code == 201
 
 
+def test_three_edges_share_one_hub_and_remain_sensor_isolated(tmp_path, monkeypatch):
+    monkeypatch.setenv("ROCKS_ADMIN_API_KEY", "fleet-admin-key")
+    app = create_app(str(tmp_path / "hub.db"))
+    service = app.state.hub_service
+    keys = {}
+    for sensor_id in ("EDGE-01", "EDGE-02", "EDGE-03"):
+        _, key = service.registry.register(sensor_id, sensor_id)
+        keys[sensor_id] = key
+
+    client = TestClient(app)
+    for sensor_id in ("EDGE-01", "EDGE-02", "EDGE-03"):
+        response = client.post(
+            "/api/v1/telemetry",
+            json=telemetry_to_dict(_record(sensor_id, f"DEVICE-{sensor_id[-1]}")),
+            headers={"Authorization": f"Bearer {keys[sensor_id]}"},
+        )
+        assert response.status_code == 200
+
+    for sensor_id in ("EDGE-01", "EDGE-02", "EDGE-03"):
+        response = client.get(
+            "/api/v1/telemetry",
+            params={"sensor_id": sensor_id},
+            headers={"Authorization": f"Bearer {keys[sensor_id]}"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert len(payload) == 1
+        assert payload[0]["sensor_id"] == sensor_id
+
+    cross = client.get(
+        "/api/v1/telemetry",
+        params={"sensor_id": "EDGE-02"},
+        headers={"Authorization": f"Bearer {keys['EDGE-01']}"},
+    )
+    assert cross.status_code == 403
+
+    admin = client.get("/api/v1/telemetry", headers={"Authorization": "Bearer fleet-admin-key"})
+    assert admin.status_code == 200
+    admin_payload = admin.json()
+    assert len(admin_payload) == 3
+    assert {row["sensor_id"] for row in admin_payload} == {"EDGE-01", "EDGE-02", "EDGE-03"}
+
+
 def test_flow_tracker_capacity_evicts_oldest_and_rejects_invalid_limits():
     for invalid in (0, -1, 10.5, "100", True, False, None):
         with pytest.raises(ValueError):

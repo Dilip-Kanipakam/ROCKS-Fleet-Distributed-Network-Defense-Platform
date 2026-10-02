@@ -209,6 +209,65 @@ def test_all_in_one_registers_supplied_api_key_as_hash(tmp_path, monkeypatch):
     assert storage.get_api_key_hash("ROCKS-EDGE-KEY") != "supplied-key"
 
 
+def test_all_in_one_custom_hub_port_matches_dashboard_and_edge_url(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setattr(socket, "if_nameindex", lambda: [(1, "eth-test")])
+
+    result = main(
+        [
+            "setup", "--config-path", str(config_path), "--mode", "all-in-one",
+            "--sensor-id", "ROCKS-EDGE-PORT", "--interface", "eth-test",
+            "--hub-port", "8780", "--dashboard-username", "admin",
+            "--dashboard-password", "long-password", "--hub-database", str(tmp_path / "hub.db"),
+            "--non-interactive",
+        ]
+    )
+
+    config = load_config(config_path)
+    assert result == 0
+    assert config["hub"]["port"] == 8780
+    assert config["dashboard"]["port"] == 8780
+    assert config["edge"]["hub_url"] == "http://127.0.0.1:8780"
+
+
+def test_setup_rejects_different_shared_hub_and_dashboard_ports(tmp_path, capsys):
+    from rocks.config import build_default_config, write_config
+
+    config_path = tmp_path / "config.yaml"
+    config = build_default_config()
+    config["deployment"]["mode"] = "hub"
+    config["hub"].update({"enabled": True, "port": 8080, "url": "http://127.0.0.1:8080"})
+    config["dashboard"].update(
+        {
+            "enabled": True,
+            "port": 8081,
+            "admin_username": "admin",
+            "admin_password_hash": "hash",
+            "session_secret": "session-secret",
+        }
+    )
+    write_config(config, config_path)
+
+    result = main(["setup", "--config-path", str(config_path), "--check"])
+
+    assert result == 2
+    assert "share one listener" in capsys.readouterr().err
+
+
+def test_setup_rejects_conflicting_explicit_port_arguments(tmp_path, capsys):
+    result = main(
+        [
+            "setup", "--config-path", str(tmp_path / "config.yaml"), "--mode", "hub",
+            "--hub-port", "8080", "--dashboard-port", "8081",
+            "--dashboard-username", "admin", "--dashboard-password", "long-password",
+            "--non-interactive",
+        ]
+    )
+
+    assert result == 2
+    assert "--hub-port and --dashboard-port must match" in capsys.readouterr().err
+
+
 def test_interactive_setup_prompts_for_mode_and_selects_interface(tmp_path, monkeypatch, capsys):
     import builtins
 
