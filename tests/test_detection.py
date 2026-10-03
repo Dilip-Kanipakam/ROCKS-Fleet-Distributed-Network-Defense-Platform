@@ -8,6 +8,7 @@ from rocks.detection.config import DetectionConfig
 from rocks.detection.engine import DetectionEngine
 from rocks.alerts.engine import AlertEngine
 from rocks.cli import main
+from rocks.config import write_config
 from rocks.hub.service import HubService
 from rocks.hub.storage import HubStorage
 from rocks.edge.telemetry import TelemetryRecord
@@ -211,7 +212,9 @@ def test_alert_engine_creates_evidence_alert_without_ml():
     assert "unusually high" in alert.message.lower()
 
 
-def test_hub_detection_runs_without_ml_and_correlates_duplicate_telemetry(tmp_path):
+def test_hub_detection_runs_without_ml_and_correlates_duplicate_telemetry(tmp_path, monkeypatch):
+    config_path = write_config({"ml": {"enabled": False}}, tmp_path / "ml-disabled.yaml")
+    monkeypatch.setenv("ROCKS_CONFIG_PATH", str(config_path))
     storage = HubStorage(tmp_path / "hub.db")
     service = HubService(storage)
     assert service.ml is None

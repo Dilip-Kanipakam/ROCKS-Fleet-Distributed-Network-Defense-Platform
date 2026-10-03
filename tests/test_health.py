@@ -73,11 +73,14 @@ def _config(tmp_path, mode="all-in-one"):
 def _create_hub_db(path, *, telemetry_timestamp=None):
     connection = sqlite3.connect(path)
     connection.executescript(
-        "CREATE TABLE telemetry (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL);"
+        "CREATE TABLE telemetry (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, received_at TEXT NOT NULL);"
         "CREATE TABLE alerts (alert_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL);"
     )
     if telemetry_timestamp:
-        connection.execute("INSERT INTO telemetry VALUES ('record-1', ?)", (telemetry_timestamp,))
+        connection.execute(
+            "INSERT INTO telemetry VALUES ('record-1', ?, ?)",
+            (telemetry_timestamp, telemetry_timestamp),
+        )
     connection.commit()
     connection.close()
 
@@ -257,6 +260,77 @@ def test_telemetry_freshness_states(tmp_path, timestamp, expected, message):
     ).run()
     assert report.get("telemetry").status == expected
     assert message.lower() in report.get("telemetry").message.lower()
+
+
+def test_hub_health_uses_receipt_time_for_delayed_ingested_telemetry(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from rocks.edge.telemetry import TelemetryRecord
+    from rocks.hub.app import create_app
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    observed_at = (now - timedelta(hours=2)).astimezone(timezone(timedelta(hours=-4)))
+    record = TelemetryRecord(
+        sensor_id="ROCKS-HEALTH-01",
+        device_id=None,
+        event_type="BEHAVIOR_SUMMARY",
+        payload={"packet_count": 1, "traffic_rate": 1.0, "connection_count": 1},
+        timestamp=observed_at.isoformat(timespec="seconds"),
+    )
+    config_path = write_config(_config(tmp_path, "hub"), tmp_path / "config.yaml")
+    hub_path = tmp_path / "hub.db"
+    monkeypatch.setenv("ROCKS_CONFIG_PATH", str(config_path))
+    app = create_app(str(hub_path))
+    service = app.state.hub_service
+    _edge, api_key = service.registry.register(record.sensor_id)
+    response = TestClient(app).post(
+        "/api/v1/telemetry",
+        json=record.to_dict(),
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+
+    with sqlite3.connect(hub_path) as connection:
+        stored_timestamp, received_at = connection.execute(
+            "SELECT timestamp, received_at FROM telemetry WHERE id = ?",
+            (record.record_id,),
+        ).fetchone()
+    assert stored_timestamp.endswith("-04:00")
+    assert datetime.fromisoformat(received_at.replace("Z", "+00:00")) >= now
+    assert service.storage.query_telemetry(sensor_id=record.sensor_id)[0].record_id == record.record_id
+
+    report = HealthChecker(
+        config_path=config_path,
+        service_manager=FakeServiceManager([(HUB_UNIT, "active", "enabled")]),
+        http_get=lambda _url, _timeout: FakeResponse(),
+        now=lambda: now,
+    ).run()
+
+    telemetry = report.get("telemetry")
+    assert telemetry.status == HealthStatus.OK
+    assert telemetry.details["recent_count_capped"] == 1
+    assert telemetry.details["freshness_basis"] == "received_at"
+
+
+def test_edge_only_health_uses_local_observation_timestamp(tmp_path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    config_path = write_config(_config(tmp_path, "edge"), tmp_path / "edge-config.yaml")
+    _create_edge_db(
+        tmp_path / "edge.db",
+        telemetry_timestamp=now.isoformat(timespec="seconds").replace("+00:00", "Z"),
+    )
+    report = HealthChecker(
+        config_path=config_path,
+        service_manager=FakeServiceManager([(EDGE_UNIT, "active", "enabled")]),
+        http_get=lambda _url, _timeout: FakeResponse(),
+        now=lambda: now,
+    ).run()
+
+    telemetry = report.get("telemetry")
+    assert telemetry.status == HealthStatus.OK
+    assert telemetry.details["recent_count_capped"] == 1
+    assert telemetry.details["freshness_basis"] == "timestamp"
 
 
 def test_invalid_configuration_returns_configuration_error(tmp_path):

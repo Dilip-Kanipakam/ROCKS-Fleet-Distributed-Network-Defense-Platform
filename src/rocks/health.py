@@ -113,7 +113,16 @@ def _redacted_url(value: str) -> str:
     return urlunsplit((parts.scheme, hostname + port, parts.path, "", ""))
 
 
-def _probe_sqlite(path: Path, *, table: str, freshness_seconds: int, now: datetime) -> dict[str, Any]:
+def _probe_sqlite(
+    path: Path,
+    *,
+    table: str,
+    freshness_seconds: int,
+    now: datetime,
+    timestamp_column: str = "timestamp",
+) -> dict[str, Any]:
+    if timestamp_column not in {"timestamp", "received_at"}:
+        raise ValueError("Unsupported telemetry freshness timestamp column")
     cutoff = (now - timedelta(seconds=freshness_seconds)).isoformat(timespec="seconds").replace("+00:00", "Z")
     with _readonly_connection(path) as connection:
         connection.execute("PRAGMA query_only = ON")
@@ -123,13 +132,16 @@ def _probe_sqlite(path: Path, *, table: str, freshness_seconds: int, now: dateti
         ).fetchone()
         if not exists:
             raise sqlite3.DatabaseError(f"Required {table} table is missing")
+        columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+        if timestamp_column not in columns:
+            raise sqlite3.DatabaseError(f"Required {timestamp_column} column is missing from {table}")
         recent_count = int(
             connection.execute(
-                f"SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE timestamp >= ? LIMIT 1001)",
+                f"SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE {timestamp_column} >= ? LIMIT 1001)",
                 (cutoff,),
             ).fetchone()[0]
         )
-        latest_row = connection.execute(f"SELECT MAX(timestamp) FROM {table}").fetchone()
+        latest_row = connection.execute(f"SELECT MAX({timestamp_column}) FROM {table}").fetchone()
         latest = str(latest_row[0]) if latest_row and latest_row[0] else None
         return {"recent_count": recent_count, "latest_timestamp": latest}
 
@@ -251,7 +263,13 @@ class HealthChecker:
             if hub_enabled
             else _configured_path(config, "database", get_storage_path(self.config_path))
         )
-        checks.append(self._telemetry_check(telemetry_path, config))
+        checks.append(
+            self._telemetry_check(
+                telemetry_path,
+                config,
+                timestamp_column="received_at" if hub_enabled else "timestamp",
+            )
+        )
 
         effective_statuses = [
             HealthStatus.WARNING if check.required and check.status == HealthStatus.UNKNOWN else check.status
@@ -413,7 +431,13 @@ class HealthChecker:
         database_check = self._hub_database_check(path)
         return HealthCheck("alerts", database_check.status, "Alert storage is available." if database_check.status == HealthStatus.OK else "Alert storage is unavailable.", details={"recent_alerts_sample": database_check.details.get("recent_alerts_sample", 0)}, hint=database_check.hint)
 
-    def _telemetry_check(self, path: Path, config: dict[str, Any]) -> HealthCheck:
+    def _telemetry_check(
+        self,
+        path: Path,
+        config: dict[str, Any],
+        *,
+        timestamp_column: str,
+    ) -> HealthCheck:
         health_config = config.get("health", {})
         try:
             freshness_seconds = int(health_config.get("telemetry_freshness_seconds", 300))
@@ -423,17 +447,23 @@ class HealthChecker:
             return HealthCheck("telemetry", HealthStatus.ERROR, "health.telemetry_freshness_seconds must be a positive integer.")
         table = "telemetry"
         try:
-            result = _probe_sqlite(path, table=table, freshness_seconds=freshness_seconds, now=self.now())
+            result = _probe_sqlite(
+                path,
+                table=table,
+                freshness_seconds=freshness_seconds,
+                now=self.now(),
+                timestamp_column=timestamp_column,
+            )
         except (OSError, sqlite3.Error) as exc:
             return HealthCheck("telemetry", HealthStatus.ERROR, f"Unable to inspect telemetry storage: {exc}", hint="Check the database check above and verify the configured Edge or Hub SQLite path.")
         timestamp = result["latest_timestamp"]
         parsed = _parse_timestamp(timestamp)
         if parsed is None:
-            return HealthCheck("telemetry", HealthStatus.WARNING, "No telemetry has been received.", details={"recent_count_capped": result["recent_count"], "freshness_seconds": freshness_seconds}, hint="Verify the Edge service, observation interface, SPAN/TAP visibility, and Hub connectivity.")
+            return HealthCheck("telemetry", HealthStatus.WARNING, "No telemetry has been received.", details={"recent_count_capped": result["recent_count"], "freshness_seconds": freshness_seconds, "freshness_basis": timestamp_column}, hint="Verify the Edge service, observation interface, SPAN/TAP visibility, and Hub connectivity.")
         age_seconds = max(0, int((self.now() - parsed).total_seconds()))
         if age_seconds <= freshness_seconds:
-            return HealthCheck("telemetry", HealthStatus.OK, "Recent telemetry is present.", details={"recent_count_capped": result["recent_count"], "age_seconds": age_seconds, "freshness_seconds": freshness_seconds})
-        return HealthCheck("telemetry", HealthStatus.WARNING, "Telemetry is stale.", details={"recent_count_capped": result["recent_count"], "age_seconds": age_seconds, "freshness_seconds": freshness_seconds}, hint="Verify Edge observation interface and SPAN/TAP configuration, then check Edge-to-Hub connectivity.")
+            return HealthCheck("telemetry", HealthStatus.OK, "Recent telemetry is present.", details={"recent_count_capped": result["recent_count"], "age_seconds": age_seconds, "freshness_seconds": freshness_seconds, "freshness_basis": timestamp_column})
+        return HealthCheck("telemetry", HealthStatus.WARNING, "Telemetry is stale.", details={"recent_count_capped": result["recent_count"], "age_seconds": age_seconds, "freshness_seconds": freshness_seconds, "freshness_basis": timestamp_column}, hint="Verify Edge observation interface and SPAN/TAP configuration, then check Edge-to-Hub connectivity.")
 
 
 def _validate_http_url(value: str, label: str) -> None:
