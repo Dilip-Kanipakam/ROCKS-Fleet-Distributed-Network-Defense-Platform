@@ -27,6 +27,8 @@ class FlowRecord:
     last_seen: float
     packet_count: int = 0
     bytes: int = 0
+    reverse_packet_count: int = 0
+    reverse_bytes: int = 0
 
     @property
     def duration(self) -> float:
@@ -61,6 +63,7 @@ class FlowTracker:
         self.expiration_seconds = expiration_seconds
         self.max_active_flows = max_active_flows
         self._flows: dict[FlowKey, FlowRecord] = {}
+        self.last_evicted: FlowRecord | None = None
         self._logger = configure_logging()
 
     @property
@@ -71,29 +74,34 @@ class FlowTracker:
     def flows(self) -> tuple[FlowRecord, ...]:
         return tuple(self._flows.values())
 
-    def update(self, metadata: PacketMetadata) -> FlowRecord | None:
+    def update(self, metadata: PacketMetadata, *, expire_stale: bool = True) -> FlowRecord | None:
+        self.last_evicted = None
         if metadata.source_ip is None or metadata.destination_ip is None:
             return None
 
+        source_endpoint = (metadata.source_ip, metadata.source_port or 0)
+        destination_endpoint = (metadata.destination_ip, metadata.destination_port or 0)
+        first_endpoint, second_endpoint = sorted((source_endpoint, destination_endpoint))
         key = FlowKey(
-            source_ip=metadata.source_ip,
-            destination_ip=metadata.destination_ip,
-            source_port=metadata.source_port or 0,
-            destination_port=metadata.destination_port or 0,
+            source_ip=first_endpoint[0],
+            destination_ip=second_endpoint[0],
+            source_port=first_endpoint[1],
+            destination_port=second_endpoint[1],
             protocol=metadata.protocol,
         )
         record = self._flows.get(key)
         if record is None:
-            self.expire(metadata.timestamp)
+            if expire_stale:
+                self.expire(metadata.timestamp)
             if len(self._flows) >= self.max_active_flows:
                 oldest_key = min(self._flows, key=lambda item: (self._flows[item].last_seen, repr(item)))
-                evicted = self._flows.pop(oldest_key)
+                self.last_evicted = self._flows.pop(oldest_key)
                 self._logger.warning("Edge flow capacity reached; evicted oldest flow %s", oldest_key)
             record = FlowRecord(
-                source_ip=key.source_ip,
-                destination_ip=key.destination_ip,
-                source_port=key.source_port,
-                destination_port=key.destination_port,
+                source_ip=metadata.source_ip,
+                destination_ip=metadata.destination_ip,
+                source_port=metadata.source_port or 0,
+                destination_port=metadata.destination_port or 0,
                 protocol=key.protocol,
                 first_seen=metadata.timestamp,
                 last_seen=metadata.timestamp,
@@ -103,8 +111,18 @@ class FlowTracker:
 
         record.last_seen = max(record.last_seen, metadata.timestamp)
         record.packet_count += 1
-        record.bytes += metadata.packet_length
-        self.expire(metadata.timestamp)
+        if (
+            metadata.source_ip == record.source_ip
+            and (metadata.source_port or 0) == record.source_port
+            and metadata.destination_ip == record.destination_ip
+            and (metadata.destination_port or 0) == record.destination_port
+        ):
+            record.bytes += metadata.packet_length
+        else:
+            record.reverse_packet_count += 1
+            record.reverse_bytes += metadata.packet_length
+        if expire_stale:
+            self.expire(metadata.timestamp)
         return record
 
     def expire(self, now: float) -> list[FlowRecord]:

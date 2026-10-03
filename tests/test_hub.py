@@ -65,6 +65,27 @@ def test_authentication_ingestion_duplicate_and_queries(tmp_path):
     assert client.get("/api/v1/telemetry", params={"limit": 1001}, headers=headers).status_code == 422
 
 
+def test_sensor_api_key_cannot_ingest_for_another_registered_sensor(tmp_path):
+    client, edge_one_key, service = client_and_key(tmp_path)
+    _edge_two, edge_two_key = service.registry.register("EDGE-02", "Second Test Edge")
+    data = telemetry_to_dict(make_record("EDGE-02"))
+
+    rejected = client.post(
+        "/api/v1/telemetry",
+        json=data,
+        headers={"Authorization": f"Bearer {edge_one_key}"},
+    )
+    accepted = client.post(
+        "/api/v1/telemetry",
+        json=data,
+        headers={"Authorization": f"Bearer {edge_two_key}"},
+    )
+
+    assert rejected.status_code == 401
+    assert rejected.json()["detail"] == "Invalid API key"
+    assert accepted.status_code == 200
+
+
 def test_invalid_telemetry_is_rejected(tmp_path):
     client, key, _service = client_and_key(tmp_path)
     response = client.post(

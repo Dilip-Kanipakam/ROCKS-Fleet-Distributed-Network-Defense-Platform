@@ -184,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     simulate_parser = subparsers.add_parser("simulate", help="generate safe synthetic telemetry")
     simulate_parser.add_argument("--scenario", default=None)
     simulate_parser.add_argument("--count", type=int, default=1)
-    simulate_parser.add_argument("--sensor-id", default="ROCKS-SIM-01")
+    simulate_parser.add_argument("--sensor-id")
     simulate_subparsers = simulate_parser.add_subparsers(dest="simulate_command")
     for scenario in Scenario:
         aliases = []
@@ -199,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
         scenario_parser.add_argument("--count", type=int, default=1)
         scenario_parser.add_argument("--interval", type=float, default=0.0)
-        scenario_parser.add_argument("--sensor-id", default="ROCKS-SIM-01")
+        scenario_parser.add_argument("--sensor-id")
     alerts_parser = subparsers.add_parser("alerts", help="local investigation alert commands")
     alerts_subparsers = alerts_parser.add_subparsers(dest="alerts_command")
     alerts_subparsers.add_parser("status", help="show alert engine status")
@@ -1101,21 +1101,30 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"ROCKS simulate error: {exc}", file=sys.stderr)
             return 2
+        edge_values = get_edge_agent_config()
+        configured_sensor_id = edge_values["sensor_id"]
+        requested_sensor_id = getattr(args, "sensor_id", None)
+        if requested_sensor_id and requested_sensor_id != configured_sensor_id:
+            print(
+                "ROCKS simulate error: --sensor-id must match the configured Edge sensor; "
+                "configure credentials authorized for that sensor before delivering telemetry.",
+                file=sys.stderr,
+            )
+            return 2
+        sensor_id = requested_sensor_id or configured_sensor_id
         records = generate_records(
             scenario,
             count=args.count,
-            sensor_id=args.sensor_id,
+            sensor_id=sensor_id,
             start=datetime.now(timezone.utc) - timedelta(minutes=max(0, args.count - 1)),
         )
         simulation = any(record.payload.get("simulation") for record in records)
         print(f"Generated {len(records)} safe synthetic {scenario.value} telemetry records.")
         print(f"Scenario: {scenario.value}")
-        print(f"Sensor ID: {args.sensor_id}")
+        print(f"Sensor ID: {sensor_id}")
         print("Synthetic data: yes")
         print(f"Explicit simulation marker: {'yes' if simulation else 'no'}")
         print("No live packets or external attack activity were generated.")
-        edge_values = get_edge_agent_config()
-        edge_values["sensor_id"] = args.sensor_id
         if edge_values["hub_url"] and edge_values["api_key"]:
             with tempfile.TemporaryDirectory(prefix="rocks-simulate-") as directory:
                 edge_values["database_path"] = Path(directory) / "telemetry.db"

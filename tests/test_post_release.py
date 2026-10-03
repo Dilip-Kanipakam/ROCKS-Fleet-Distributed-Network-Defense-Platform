@@ -177,19 +177,56 @@ def test_dashboard_mutations_reject_cross_origin_but_allow_same_origin(tmp_path,
     assert read_only.status_code == 200
 
 
-def test_simulator_cli_labels_all_records_as_synthetic(capsys, monkeypatch):
+def test_simulator_cli_uses_configured_edge_identity_and_key(capsys, monkeypatch):
+    captured = {}
+
+    class StubAgent:
+        def __init__(self, config):
+            captured["config"] = config
+
+        def run_dry_run(self, records):
+            captured["records"] = records
+            return type("SendResult", (), {"sent": len(records), "failed": 0})()
+
     monkeypatch.setattr(
         "rocks.cli.get_edge_agent_config",
-        lambda: {"sensor_id": "ROCKS-SIM-01", "hub_url": "", "api_key": ""},
+        lambda: {
+            "sensor_id": "ROCKS-EDGE-01",
+            "hub_url": "http://hub.local",
+            "api_key": "edge-01-key",
+        },
     )
-    assert main(["simulate", "high_traffic"]) == 0
-    normal_output = capsys.readouterr().out
-    assert "Synthetic data: yes" in normal_output
-    assert "Explicit simulation marker: yes" in normal_output
-    assert main(["simulate", "deauth_related_simulation"]) == 0
-    simulated_output = capsys.readouterr().out
-    assert "Synthetic data: yes" in simulated_output
-    assert "Explicit simulation marker: yes" in simulated_output
+    monkeypatch.setattr("rocks.cli.EdgeAgent", StubAgent)
+
+    assert main(["simulate", "--scenario", "high_traffic"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Sensor ID: ROCKS-EDGE-01" in output
+    assert "Synthetic data: yes" in output
+    assert "Explicit simulation marker: yes" in output
+    assert captured["config"].sensor_id == "ROCKS-EDGE-01"
+    assert captured["config"].api_key == "edge-01-key"
+    assert all(record.sensor_id == "ROCKS-EDGE-01" for record in captured["records"])
+    assert all(record.payload["simulation"] is True for record in captured["records"])
+
+
+def test_simulator_cli_rejects_sensor_id_without_matching_credentials(capsys, monkeypatch):
+    monkeypatch.setattr(
+        "rocks.cli.get_edge_agent_config",
+        lambda: {
+            "sensor_id": "ROCKS-EDGE-01",
+            "hub_url": "http://hub.local",
+            "api_key": "edge-01-key",
+        },
+    )
+    monkeypatch.setattr(
+        "rocks.cli.EdgeAgent",
+        lambda *_args, **_kwargs: pytest.fail("unauthorized sensor must not be delivered"),
+    )
+
+    assert main(["simulate", "--scenario", "high_traffic", "--sensor-id", "ROCKS-OTHER-01"]) == 2
+
+    assert "--sensor-id must match the configured Edge sensor" in capsys.readouterr().err
 
 
 def test_ml_training_uses_storage_bound(monkeypatch, tmp_path):

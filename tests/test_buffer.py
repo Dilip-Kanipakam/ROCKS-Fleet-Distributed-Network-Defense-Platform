@@ -35,6 +35,51 @@ def test_buffer_persists_across_reopen(tmp_path):
     assert reopened.size() == 0
 
 
+def test_full_buffer_evicts_oldest_and_persists_drop_count(tmp_path):
+    path = tmp_path / "bounded-buffer.db"
+    buffer = TelemetryBuffer(path, buffer_limit=2)
+    first = record()
+    second = behavior_summary_telemetry(
+        TrafficFeatures(0.0, 60.0, 2, 120, 120, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 2.0, 2.0),
+        "SENSOR",
+        device_id="DEVICE-2",
+    )
+    third = behavior_summary_telemetry(
+        TrafficFeatures(0.0, 60.0, 3, 180, 180, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 3.0, 3.0),
+        "SENSOR",
+        device_id="DEVICE-3",
+    )
+
+    assert buffer.add(first)
+    assert buffer.add(second)
+    assert buffer.add(third)
+
+    reopened = TelemetryBuffer(path, buffer_limit=2)
+    assert reopened.size() == 2
+    assert [item.record_id for item in reopened.peek(10)] == [second.record_id, third.record_id]
+    assert reopened.dropped_records == 1
+
+
+def test_health_warns_on_persistent_buffer_evictions(tmp_path):
+    from rocks.health import HealthChecker, HealthStatus
+
+    path = tmp_path / "health-buffer.db"
+    buffer = TelemetryBuffer(path, buffer_limit=1)
+    buffer.add(record())
+    buffer.add(
+        behavior_summary_telemetry(
+            TrafficFeatures(0.0, 60.0, 2, 120, 120, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 2.0, 2.0),
+            "SENSOR",
+            device_id="DEVICE-2",
+        )
+    )
+
+    check = HealthChecker._buffer_check(None, path)
+
+    assert check.status == HealthStatus.WARNING
+    assert check.details["dropped_records"] == 1
+
+
 def test_buffer_can_peek_records_for_one_sensor_without_reordering_others(tmp_path):
     buffer = TelemetryBuffer(tmp_path / "sensor-filter.db")
     first = record()

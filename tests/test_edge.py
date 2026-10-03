@@ -77,6 +77,24 @@ def test_flow_creation_and_byte_packet_counting():
     assert tracker.snapshot()[0].packets_per_second == 1.0
 
 
+def test_reverse_direction_packets_share_one_flow():
+    tracker = FlowTracker(expiration_seconds=5.0)
+    outbound = parse_packet(packet(IP(src="192.0.2.1", dst="198.51.100.1") / TCP(sport=1234, dport=443), 10.0))
+    inbound = parse_packet(packet(IP(src="198.51.100.1", dst="192.0.2.1") / TCP(sport=443, dport=1234), 11.0))
+
+    first = tracker.update(outbound)
+    reverse = tracker.update(inbound)
+
+    assert first is reverse
+    assert tracker.active_flow_count == 1
+    assert reverse is not None
+    assert reverse.packet_count == 2
+    assert reverse.bytes == outbound.packet_length
+    assert reverse.reverse_packet_count == 1
+    assert reverse.reverse_bytes == inbound.packet_length
+    assert len(tracker.expire(16.0)) == 1
+
+
 def test_multiple_flows_and_protocol_without_ports():
     tracker = FlowTracker()
     tcp = parse_packet(packet(IP(src="192.0.2.1", dst="198.51.100.1") / TCP(sport=1, dport=2), 10.0))

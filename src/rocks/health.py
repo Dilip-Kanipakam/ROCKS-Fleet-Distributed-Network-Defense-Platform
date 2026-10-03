@@ -407,8 +407,35 @@ class HealthChecker:
             with _readonly_connection(path) as connection:
                 connection.execute("PRAGMA query_only = ON")
                 count = int(connection.execute("SELECT COUNT(*) FROM (SELECT 1 FROM buffer LIMIT 1001)").fetchone()[0])
+                stats_table = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='buffer_stats'"
+                ).fetchone()
+                dropped, dropped_packets = (0, 0)
+                if stats_table:
+                    columns = {row[1] for row in connection.execute("PRAGMA table_info(buffer_stats)")}
+                    row = connection.execute(
+                        "SELECT dropped_records, dropped_packets FROM buffer_stats WHERE id = 1"
+                        if "dropped_packets" in columns
+                        else "SELECT dropped_records, 0 FROM buffer_stats WHERE id = 1"
+                    ).fetchone()
+                    if row:
+                        dropped, dropped_packets = int(row[0]), int(row[1])
             label = "1000+" if count > 1000 else str(count)
-            return HealthCheck("edge_buffer", HealthStatus.OK, f"Edge buffer is readable ({label} records).", details={"path": str(path), "records_capped": count})
+            details = {
+                "path": str(path),
+                "records_capped": count,
+                "dropped_records": dropped,
+                "dropped_packets": dropped_packets,
+            }
+            if dropped or dropped_packets:
+                return HealthCheck(
+                    "edge_buffer",
+                    HealthStatus.WARNING,
+                    f"Edge buffer is readable ({label} records), but {dropped} telemetry records and {dropped_packets} packet summaries were dropped.",
+                    details=details,
+                    hint="Restore sender throughput or reduce telemetry generation; inspect EDGE_BUFFER_OVERFLOW logs.",
+                )
+            return HealthCheck("edge_buffer", HealthStatus.OK, f"Edge buffer is readable ({label} records).", details=details)
         except (OSError, sqlite3.Error) as exc:
             return HealthCheck("edge_buffer", HealthStatus.WARNING, f"Edge buffer is unavailable: {exc}", details={"path": str(path)}, hint="Check Edge storage permissions and 'journalctl -u rocks-edge.service'.")
 
