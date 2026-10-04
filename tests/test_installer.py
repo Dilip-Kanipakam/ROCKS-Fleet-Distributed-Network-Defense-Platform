@@ -184,6 +184,56 @@ def test_installer_runs_configuration_service_and_health_then_prints_ready(tmp_p
     assert "session-secret-never-print" not in output
 
 
+def test_installer_retries_transient_edge_storage_readiness_failure(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "config.yaml"
+    config = _hub_config(tmp_path / "hub.db")
+    config["deployment"]["mode"] = "all-in-one"
+    config["edge"] = {
+        "enabled": True,
+        "sensor_id": "EDGE-READY-01",
+        "interface": "eth-test",
+        "hub_url": "http://127.0.0.1:8000",
+        "send_interval_seconds": 5,
+    }
+    config["hub"]["api_key"] = "edge-registration-key"
+    config["storage"]["database"] = str(tmp_path / "data" / "edge.db")
+    config["storage"]["buffer"] = str(tmp_path / "data" / "buffer.db")
+    write_config(config, config_path)
+    names = (
+        "configuration", "edge_service", "edge_storage", "edge_buffer",
+        "hub_service", "hub_database", "hub_api", "dashboard",
+    )
+    initializing_checks = tuple(
+        HealthCheck(
+            name,
+            HealthStatus.ERROR if name == "edge_storage" else HealthStatus.OK,
+            "SQLite storage is unavailable: unable to open database file"
+            if name == "edge_storage"
+            else "ok",
+            details={"path": str(tmp_path / "data" / "edge.db")} if name == "edge_storage" else {},
+        )
+        for name in names
+    )
+    reports = [
+        HealthReport(initializing_checks, HealthStatus.UNHEALTHY, "all-in-one"),
+        HealthReport(
+            tuple(HealthCheck(name, HealthStatus.OK, "ok") for name in names),
+            HealthStatus.HEALTHY,
+            "all-in-one",
+        ),
+    ]
+    _mock_installer_environment(monkeypatch, config_path=config_path, health_reports=reports)
+    monkeypatch.setattr(cli, "_available_interfaces", lambda: ["eth-test"])
+
+    result = main(["install", "--config-path", str(config_path), "--non-interactive"])
+
+    output = capsys.readouterr()
+    assert result == 0
+    assert "Health: edge_storage OK" in output.out
+    assert "ROCKS READY" in output.out
+    assert not output.err
+
+
 def test_installer_invokes_interactive_setup_for_first_install(tmp_path, monkeypatch, capsys):
     config_path = tmp_path / "config.yaml"
     commands = _mock_installer_environment(monkeypatch, config_path=config_path)
@@ -256,13 +306,41 @@ def test_fresh_all_in_one_install_runs_real_wizard_without_manual_steps(tmp_path
 
 def test_installer_does_not_report_ready_when_required_health_fails(tmp_path, monkeypatch, capsys):
     config_path = tmp_path / "config.yaml"
-    write_config(_hub_config(tmp_path / "hub.db"), config_path)
-    unhealthy_checks = tuple(
-        HealthCheck(name, HealthStatus.ERROR if name == "hub_api" else HealthStatus.OK, "check")
-        for name in ("configuration", "hub_service", "hub_database", "hub_api", "dashboard")
+    config = _hub_config(tmp_path / "hub.db")
+    config["deployment"]["mode"] = "all-in-one"
+    config["edge"] = {
+        "enabled": True,
+        "sensor_id": "EDGE-FAILED-01",
+        "interface": "eth-test",
+        "hub_url": "http://127.0.0.1:8000",
+        "send_interval_seconds": 5,
+    }
+    config["hub"]["api_key"] = "edge-registration-key"
+    edge_database = tmp_path / "data" / "edge.db"
+    config["storage"]["database"] = str(edge_database)
+    config["storage"]["buffer"] = str(tmp_path / "data" / "buffer.db")
+    write_config(config, config_path)
+    names = (
+        "configuration", "edge_service", "edge_storage", "edge_buffer",
+        "hub_service", "hub_database", "hub_api", "dashboard",
     )
-    report = HealthReport(unhealthy_checks, HealthStatus.UNHEALTHY, "hub")
+    unhealthy_checks = tuple(
+        HealthCheck(
+            name,
+            HealthStatus.ERROR if name == "edge_storage" else HealthStatus.OK,
+            "SQLite storage is unavailable: unable to open database file"
+            if name == "edge_storage"
+            else "check",
+            details={"path": str(edge_database)} if name == "edge_storage" else {},
+            hint="Check storage.database and 'journalctl -u rocks-edge.service'."
+            if name == "edge_storage"
+            else "",
+        )
+        for name in names
+    )
+    report = HealthReport(unhealthy_checks, HealthStatus.UNHEALTHY, "all-in-one")
     _mock_installer_environment(monkeypatch, config_path=config_path, health_reports=[report])
+    monkeypatch.setattr(cli, "_available_interfaces", lambda: ["eth-test"])
     times = iter((0.0, 31.0))
     monkeypatch.setattr(cli.time, "monotonic", lambda: next(times))
 
@@ -272,6 +350,10 @@ def test_installer_does_not_report_ready_when_required_health_fails(tmp_path, mo
     assert result == 1
     assert "ROCKS READY" not in captured.out
     assert "Failed component: service/runtime health" in captured.err
+    assert "Runtime readiness was not confirmed within 30 seconds" in captured.err
+    assert "SQLite storage is unavailable: unable to open database file" in captured.err
+    assert f"path={edge_database}" in captured.err
+    assert "recovery=Check storage.database and 'journalctl -u rocks-edge.service'." in captured.err
     assert "./.venv/bin/rocks health verbose" in captured.err
 
 

@@ -53,6 +53,7 @@ class EdgeAgent:
         self.stop_event = threading.Event()
         self.capture: PacketCapture | None = None
         self.storage = TelemetryStorage(config.database_path)
+        self.storage.initialize()
         self.buffer = TelemetryBuffer(config.buffer_path, buffer_limit=config.buffer_limit)
         self.flow_tracker = FlowTracker(max_active_flows=config.max_active_flows)
         self._packets: list[PacketMetadata] = []

@@ -53,7 +53,7 @@ from rocks.alerts.config import get_email_config
 from rocks.alerts.email import EmailNotificationService, NotificationError
 from rocks.simulator.generator import Scenario, generate_records
 from rocks.service_manager import ServiceManager, ServiceManagerError
-from rocks.health import HealthChecker, HealthStatus
+from rocks.health import HealthCheck, HealthChecker, HealthStatus
 from rocks.detection.config import get_detection_config
 from rocks.detection.engine import DetectionEngine
 from rocks.installer import (
@@ -73,6 +73,7 @@ from scapy.packet import Packet
 
 
 LOGGER = configure_logging()
+INSTALL_READINESS_TIMEOUT_SECONDS = 30
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -488,7 +489,7 @@ def _run_installer(args: argparse.Namespace) -> int:
         required.update({"edge_service", "edge_storage", "edge_buffer", "hub_api"})
     if mode in {"hub", "all-in-one"}:
         required.update({"hub_service", "hub_database", "hub_api", "dashboard"})
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + INSTALL_READINESS_TIMEOUT_SECONDS
     report = HealthChecker(config_path=config_path).run()
     verification_error: str | None = None
     services_verified = False
@@ -515,10 +516,16 @@ def _run_installer(args: argparse.Namespace) -> int:
     ):
         failed_checks = [name for name in required if name not in checks or checks[name].status != HealthStatus.OK]
         health_details = "; ".join(
-            f"{name}: {checks[name].message if name in checks else 'check unavailable'}"
+            _format_installer_health_failure(name, checks.get(name))
             for name in sorted(failed_checks)
         )
-        failure_detail = verification_error or ("Health checks failed: " + health_details)
+        failure_detail = (
+            f"Runtime readiness was not confirmed within {INSTALL_READINESS_TIMEOUT_SECONDS} seconds"
+        )
+        if verification_error:
+            failure_detail += f"; service verification: {verification_error}"
+        if health_details:
+            failure_detail += f"; failed checks: {health_details}"
         return _installer_failed(
             "service/runtime health",
             failure_detail,
@@ -531,6 +538,18 @@ def _run_installer(args: argparse.Namespace) -> int:
     if final_url:
         print(f"Dashboard URL: {final_url}")
     return 0
+
+
+def _format_installer_health_failure(name: str, check: HealthCheck | None) -> str:
+    if check is None:
+        return f"{name}: check unavailable"
+    details = [f"{name}: {check.message}"]
+    path = check.details.get("path")
+    if path:
+        details.append(f"path={path}")
+    if check.hint:
+        details.append(f"recovery={check.hint}")
+    return "; ".join(details)
 
 
 def _installer_failed(

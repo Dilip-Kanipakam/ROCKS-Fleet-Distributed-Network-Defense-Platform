@@ -227,7 +227,14 @@ class HealthChecker:
         if edge_enabled:
             edge_path = _configured_path(config, "database", get_storage_path(self.config_path))
             edge_buffer_path = _configured_path(config, "buffer", get_buffer_path(self.config_path))
-            checks.append(self._storage_check("edge_storage", edge_path, "telemetry", "rocks edge storage status"))
+            checks.append(
+                self._storage_check(
+                    "edge_storage",
+                    edge_path,
+                    "telemetry",
+                    "Check storage.database and 'journalctl -u rocks-edge.service'.",
+                )
+            )
             checks.append(self._buffer_check(edge_buffer_path))
         else:
             checks.append(HealthCheck("edge_storage", HealthStatus.NOT_APPLICABLE, "Edge is not configured on this host.", required=False))

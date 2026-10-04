@@ -31,6 +31,34 @@ def test_dry_run_stores_synthetic_telemetry(tmp_path):
     assert "api_key" not in str(agent.status()).lower()
 
 
+def test_edge_storage_is_initialized_when_agent_starts_without_telemetry(tmp_path):
+    database_path = tmp_path / "nested" / "telemetry.db"
+    agent = EdgeAgent(
+        EdgeAgentConfig(
+            database_path=database_path,
+            buffer_path=tmp_path / "nested" / "buffer.db",
+        )
+    )
+
+    assert database_path.is_file()
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telemetry'"
+        ).fetchone()
+        assert connection.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0] == 0
+    assert agent.buffer.size() == 0
+    assert agent.storage.insert_telemetry(generate_records(Scenario.NORMAL, count=1, sensor_id="EDGE-TEST")[0])
+
+    repeated_agent = EdgeAgent(
+        EdgeAgentConfig(
+            database_path=database_path,
+            buffer_path=tmp_path / "nested" / "buffer.db",
+        )
+    )
+
+    assert repeated_agent.storage.count() == 1
+
+
 def test_sender_success_removes_and_failure_preserves(tmp_path, monkeypatch):
     agent = EdgeAgent(
         EdgeAgentConfig(

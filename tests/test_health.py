@@ -9,6 +9,7 @@ import pytest
 from rocks.cli import main
 from rocks.alerts.config import get_alert_config
 from rocks.config import get_edge_agent_config, write_config
+from rocks.edge.agent import EdgeAgent, EdgeAgentConfig
 from rocks.health import HealthChecker, HealthStatus, aggregate_health
 from rocks.service_manager import EDGE_UNIT, HUB_UNIT
 
@@ -137,6 +138,32 @@ def test_health_reports_running_services_and_fresh_telemetry(tmp_path):
     assert report.get("hub_api").status == HealthStatus.OK
     assert report.get("dashboard").status == HealthStatus.OK
     assert report.get("telemetry").status == HealthStatus.OK
+
+
+def test_edge_health_is_ready_after_agent_initialization_without_telemetry(tmp_path):
+    config = _config(tmp_path, "edge")
+    config_path = write_config(config, tmp_path / "edge-config.yaml")
+    agent = EdgeAgent(
+        EdgeAgentConfig(
+            sensor_id=config["edge"]["sensor_id"],
+            interface=config["edge"]["interface"],
+            hub_url=config["edge"]["hub_url"],
+            api_key=config["hub"]["api_key"],
+            database_path=tmp_path / "edge.db",
+            buffer_path=tmp_path / "buffer.db",
+        )
+    )
+
+    report = HealthChecker(
+        config_path=config_path,
+        service_manager=FakeServiceManager([(EDGE_UNIT, "active", "enabled")]),
+        http_get=lambda _url, _timeout: FakeResponse(),
+    ).run()
+
+    assert agent.storage.count() == 0
+    assert report.get("edge_storage").status == HealthStatus.OK
+    assert report.get("edge_buffer").status == HealthStatus.OK
+    assert report.get("edge_storage").details["path"] == str(tmp_path / "edge.db")
 
 
 @pytest.mark.parametrize(
