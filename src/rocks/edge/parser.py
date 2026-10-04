@@ -26,6 +26,12 @@ class PacketMetadata:
     source_mac: str | None = None
     destination_mac: str | None = None
     dns_related: bool = False
+    packet_count: int = 1
+    aggregate_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.aggregate_bytes is None:
+            object.__setattr__(self, "aggregate_bytes", self.packet_length)
 
     @property
     def observed_at(self) -> datetime:

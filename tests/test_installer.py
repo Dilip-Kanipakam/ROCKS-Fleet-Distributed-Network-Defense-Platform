@@ -166,6 +166,10 @@ def test_installer_runs_configuration_service_and_health_then_prints_ready(tmp_p
     config_path = tmp_path / "config.yaml"
     write_config(_hub_config(tmp_path / "hub.db"), config_path)
     original = config_path.read_bytes()
+    interpreter = tmp_path / ".venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.touch()
+    monkeypatch.setattr(cli.sys, "executable", str(interpreter))
     commands = _mock_installer_environment(monkeypatch, config_path=config_path)
 
     result = main(["install", "--config-path", str(config_path), "--non-interactive"])
@@ -178,8 +182,7 @@ def test_installer_runs_configuration_service_and_health_then_prints_ready(tmp_p
     assert "Dashboard URL: http://127.0.0.1:8000/dashboard" in output
     assert len(commands) == 1
     assert commands[0][-2:] == ["service", "install"]
-    assert commands[0][3] == sys.executable
-    assert "/.venv/bin/python" in commands[0][3]
+    assert commands[0][3] == str(interpreter)
     assert "password-hash-never-print" not in output
     assert "session-secret-never-print" not in output
 

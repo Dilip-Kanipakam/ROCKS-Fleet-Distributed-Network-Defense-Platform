@@ -184,11 +184,12 @@ def test_packet_window_truncation_is_persisted_and_reported(tmp_path):
         )
     )
     start = time.time()
+    # Distinct destinations exercise the bounded-key limit; same-key packets coalesce.
     for index in range(3):
         agent.process_packet(
             _wire_packet(
                 "10.0.0.10",
-                "8.8.8.8",
+                f"8.8.8.{index + 1}",
                 start + index / 10,
                 TCP(sport=40_000, dport=443),
             )
@@ -199,6 +200,72 @@ def test_packet_window_truncation_is_persisted_and_reported(tmp_path):
     assert summaries[0].payload["packet_count"] == 2
     assert agent.buffer.dropped_packets == 1
     assert agent.status()["packet_metadata_dropped"] == 1
+
+
+def test_repeated_packets_coalesce_without_packet_window_growth(tmp_path):
+    agent = EdgeAgent(
+        EdgeAgentConfig(
+            buffer_limit=8,
+            telemetry_window_seconds=30,
+            database_path=tmp_path / "telemetry.db",
+            buffer_path=tmp_path / "buffer.db",
+        )
+    )
+    start = time.time()
+    for index in range(5_000):
+        agent.process_packet(
+            _wire_packet("10.0.0.10", "8.8.8.8", start + index / 10_000, TCP(sport=40_000, dport=443))
+        )
+
+    assert len(agent._packets) == 1
+    assert agent._packets[next(iter(agent._packets))].packet_count == 5_000
+    assert agent.buffer.dropped_packets == 0
+    summaries = [record for record in agent.flush_features() if record.event_type == "BEHAVIOR_SUMMARY"]
+    assert len(summaries) == 1
+    assert summaries[0].payload["packet_count"] == 5_000
+    assert summaries[0].payload["window_seconds"] == 30
+
+
+def test_feature_flush_waits_for_configured_window(tmp_path, monkeypatch):
+    agent = EdgeAgent(
+        EdgeAgentConfig(
+            telemetry_window_seconds=30,
+            database_path=tmp_path / "telemetry.db",
+            buffer_path=tmp_path / "buffer.db",
+        )
+    )
+    clock = [100.0]
+    monkeypatch.setattr("rocks.edge.agent.time.monotonic", lambda: clock[0])
+    agent._last_feature_flush = 100.0
+    agent.process_packet(_wire_packet("10.0.0.10", "8.8.8.8", time.time(), TCP(sport=40_000, dport=443)))
+
+    clock[0] = 129.9
+    assert agent._flush_features_if_due() == []
+    clock[0] = 130.0
+    records = agent._flush_features_if_due()
+
+    summaries = [record for record in records if record.event_type == "BEHAVIOR_SUMMARY"]
+    assert len(summaries) == 1
+    assert summaries[0].payload["window_seconds"] == 30
+
+
+def test_packet_window_is_bounded_by_distinct_feature_keys_and_counts_drops(tmp_path):
+    agent = EdgeAgent(
+        EdgeAgentConfig(
+            buffer_limit=2,
+            database_path=tmp_path / "telemetry.db",
+            buffer_path=tmp_path / "buffer.db",
+        )
+    )
+    start = time.time()
+    for index in range(5):
+        agent.process_packet(
+            _wire_packet("10.0.0.10", f"8.8.8.{index + 1}", start + index / 10, TCP(sport=40_000 + index, dport=443))
+        )
+
+    assert len(agent._packets) == 2
+    agent.flush_features()
+    assert agent.buffer.dropped_packets == 3
 
 
 def test_sender_loop_retries_after_transient_storage_error(tmp_path, monkeypatch):
@@ -228,6 +295,36 @@ def test_sender_loop_retries_after_transient_storage_error(tmp_path, monkeypatch
     agent._send_loop()
 
     assert attempts == 2
+
+
+def test_sender_loop_drains_full_successful_batches_without_idle_delay(tmp_path, monkeypatch):
+    agent = EdgeAgent(
+        EdgeAgentConfig(
+            send_interval_seconds=60,
+            database_path=tmp_path / "telemetry.db",
+            buffer_path=tmp_path / "buffer.db",
+        )
+    )
+    wait_calls = 0
+
+    def wait(_interval):
+        nonlocal wait_calls
+        wait_calls += 1
+        return wait_calls == 2
+
+    monkeypatch.setattr(agent.stop_event, "wait", wait)
+    calls = []
+
+    def send_pending():
+        calls.append(len(calls))
+        return SendResult(sent=100 if len(calls) == 1 else 0, failed=0)
+
+    monkeypatch.setattr(agent, "send_pending", send_pending)
+
+    agent._send_loop()
+
+    assert len(calls) == 2
+    assert wait_calls == 2
 
 
 def test_missing_interface_fails_before_capture(tmp_path):
@@ -376,9 +473,12 @@ def test_dns_heavy_window_aggregates_queries_across_source_ports(tmp_path):
             )
         )
 
+    assert len(agent._packets) == 1
+    assert next(iter(agent._packets.values())).packet_count == 500
     records = agent.flush_features()
     dns_records = [record for record in records if record.event_type == "DNS"]
 
+    assert len(agent._packets) == 0
     assert len(dns_records) == 1
     assert dns_records[0].payload["request_count"] == 500
     assert dns_records[0].payload["source_port"] is None
@@ -503,3 +603,37 @@ def test_periodic_flush_emits_idle_expired_flow_without_new_packet(tmp_path):
     assert connections[0].payload["packet_count"] == 1
     assert agent.storage.count() == 1
     assert agent.buffer.size() == 1
+
+
+def test_shutdown_flush_emits_one_final_summary_per_source(tmp_path, monkeypatch):
+    agent = EdgeAgent(
+        EdgeAgentConfig(
+            interface="test0",
+            send_interval_seconds=60,
+            telemetry_window_seconds=60,
+            database_path=tmp_path / "telemetry.db",
+            buffer_path=tmp_path / "buffer.db",
+        )
+    )
+
+    class FiniteCapture:
+        def __init__(self, _interface, callback):
+            self.callback = callback
+
+        def start(self):
+            now = time.time()
+            for source in ("10.0.0.10", "10.0.0.11"):
+                self.callback(_wire_packet(source, "8.8.8.8", now, TCP(sport=40_000, dport=443)))
+
+        def stop(self):
+            return None
+
+    monkeypatch.setattr("rocks.edge.agent.PacketCapture", FiniteCapture)
+
+    agent.run()
+
+    summaries = [record for record in agent.storage.get_recent(10) if record.event_type == "BEHAVIOR_SUMMARY"]
+    assert agent.config.telemetry_window_seconds == 60
+    assert len(summaries) == 2
+    assert {record.device_id.split("|", 1)[0] for record in summaries} == {"10.0.0.10", "10.0.0.11"}
+    assert agent.buffer.size() == 2

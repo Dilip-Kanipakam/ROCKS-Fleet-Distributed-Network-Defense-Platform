@@ -9,7 +9,14 @@
 </head>
 <body>
   <header class="topbar">
-    <div><p class="eyebrow">ROCKS FLEET</p><h1>COMMAND CENTER</h1><p class="subtitle">Fleet health and investigation overview</p></div>
+    <div class="brand">
+      <img class="brand-logo" src="/dashboard/static/rocks-logo.png" alt="ROCKS Fleet logo">
+      <div class="brand-copy">
+        <p class="eyebrow">ROCKS FLEET</p>
+        <h1>COMMAND CENTER</h1>
+        <p class="subtitle">Fleet health and investigation overview</p>
+      </div>
+    </div>
     <div class="page-nav"><a class="ghost" href="/dashboard/edges">Edges</a><a class="ghost" href="/dashboard/telemetry">Telemetry</a><a class="ghost" href="/dashboard/alerts">Alerts</a><form method="post" action="/dashboard/logout"><button class="ghost" type="submit">Log out</button></form></div>
   </header>
   <main class="shell">

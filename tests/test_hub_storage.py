@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from rocks.edge.features import TrafficFeatures
@@ -45,6 +46,23 @@ def test_repeated_hub_storage_access_closes_sqlite_descriptors(tmp_path):
 
     after = len(os.listdir(descriptor_directory))
     assert after <= before + 1
+
+
+def test_hub_schema_migration_runs_once_under_concurrent_access(tmp_path, monkeypatch):
+    storage = HubStorage(tmp_path / "schema-once.db")
+    ensure_columns_calls = 0
+    original_ensure_columns = storage._ensure_alert_columns
+
+    def count_ensure_columns(connection):
+        nonlocal ensure_columns_calls
+        ensure_columns_calls += 1
+        return original_ensure_columns(connection)
+
+    monkeypatch.setattr(storage, "_ensure_alert_columns", count_ensure_columns)
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        list(executor.map(lambda _: storage.initialize(), range(64)))
+
+    assert ensure_columns_calls == 1
 
 
 def test_analysis_is_unique_by_telemetry_and_model(tmp_path):

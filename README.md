@@ -1,3 +1,17 @@
+<p align="center">
+  <img src="docs/assets/rocks-logo.png" alt="ROCKS Fleet Logo" width="420">
+</p>
+
+<h1 align="center">ROCKS Fleet</h1>
+
+<p align="center">
+  Distributed Network Defense Platform
+</p>
+
+<p align="center">
+  <b>Detect. Analyze. Alert. Restore.</b>
+</p>
+
 # ROCKS Fleet
 
 **Detect. Analyze. Alert. Restore.**

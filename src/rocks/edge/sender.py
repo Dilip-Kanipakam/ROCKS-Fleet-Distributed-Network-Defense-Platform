@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -19,13 +20,24 @@ class SendResult:
 class EdgeSender:
     """Bounded, acknowledgement-driven sender for buffered local telemetry."""
 
-    def __init__(self, hub_url: str, api_key: str, *, timeout_seconds: float = 10.0, max_attempts: int = 1) -> None:
+    def __init__(
+        self,
+        hub_url: str,
+        api_key: str,
+        *,
+        timeout_seconds: float = 10.0,
+        max_attempts: int = 1,
+        max_concurrent_requests: int = 16,
+    ) -> None:
         if not hub_url or not api_key:
             raise ValueError("hub_url and api_key are required")
         self.endpoint = hub_url.rstrip("/") + "/api/v1/telemetry"
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max(1, max_attempts)
+        if max_concurrent_requests <= 0:
+            raise ValueError("max_concurrent_requests must be greater than zero")
+        self.max_concurrent_requests = max_concurrent_requests
         self._logger = configure_logging()
 
     def send_record(self, record: TelemetryRecord) -> bool:
@@ -60,10 +72,19 @@ class EdgeSender:
     ) -> SendResult:
         sent = 0
         failed = 0
-        for record in buffer.peek(limit, sensor_id=sensor_id):
-            if self.send_record(record):
-                buffer.remove(record.record_id)
-                sent += 1
-            else:
-                failed += 1
+        records = buffer.peek(limit, sensor_id=sensor_id)
+        if not records:
+            return SendResult(sent=0, failed=0)
+        with ThreadPoolExecutor(max_workers=min(self.max_concurrent_requests, len(records))) as executor:
+            futures = [executor.submit(self.send_record, record) for record in records]
+            for record, future in zip(records, futures):
+                try:
+                    acknowledged = future.result()
+                except Exception:
+                    acknowledged = False
+                if acknowledged:
+                    buffer.remove(record.record_id)
+                    sent += 1
+                else:
+                    failed += 1
         return SendResult(sent=sent, failed=failed)

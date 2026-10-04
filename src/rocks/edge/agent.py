@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -56,7 +56,7 @@ class EdgeAgent:
         self.storage.initialize()
         self.buffer = TelemetryBuffer(config.buffer_path, buffer_limit=config.buffer_limit)
         self.flow_tracker = FlowTracker(max_active_flows=config.max_active_flows)
-        self._packets: list[PacketMetadata] = []
+        self._packets: OrderedDict[tuple[object, ...], PacketMetadata] = OrderedDict()
         self._flow_source_macs: dict[tuple[str, str, int, int, str], str] = {}
         self._lock = threading.Lock()
         self._feature_flush_lock = threading.Lock()
@@ -88,10 +88,19 @@ class EdgeAgent:
                 expired_records = [self._connection_record(flow) for flow in expired]
                 for flow in expired:
                     self._flow_source_macs.pop(_flow_key(flow), None)
-                self._packets.append(metadata)
-                if len(self._packets) > self.config.buffer_limit:
-                    self._packets.pop(0)
-                    self._packet_metadata_drops_unreported += 1
+                packet_key = _packet_window_key(metadata)
+                existing = self._packets.get(packet_key)
+                if existing is not None:
+                    self._packets[packet_key] = replace(
+                        existing,
+                        timestamp=max(existing.timestamp, metadata.timestamp),
+                        packet_count=existing.packet_count + metadata.packet_count,
+                        aggregate_bytes=(existing.aggregate_bytes or 0) + (metadata.aggregate_bytes or 0),
+                    )
+                elif len(self._packets) < self.config.buffer_limit:
+                    self._packets[packet_key] = metadata
+                else:
+                    self._packet_metadata_drops_unreported += metadata.packet_count
                 if not metadata.dns_related:
                     flow = self.flow_tracker.update(metadata, expire_stale=False)
                     evicted_flow = self.flow_tracker.last_evicted
@@ -119,7 +128,7 @@ class EdgeAgent:
         window_start = self._feature_window_started
         window_end = time.time()
         with self._lock:
-            packets = list(self._packets)
+            packets = list(self._packets.values())
             self._packets.clear()
             expired_flows = self.flow_tracker.expire(window_end)
             expired_records = [self._connection_record(flow) for flow in expired_flows]
@@ -185,7 +194,7 @@ class EdgeAgent:
                 destination_ip=destination_ip,
                 destination_port=destination_port,
                 protocol=protocol,
-                request_count=len(group),
+                request_count=sum(packet.packet_count for packet in group),
                 failure_count=0,
                 device_id=device_id,
                 timestamp=observed_at,
@@ -312,13 +321,23 @@ class EdgeAgent:
             return False
 
     def _send_loop(self) -> None:
-        while not self.stop_event.wait(self.config.send_interval_seconds):
+        drain_backlog = False
+        batch_limit = min(100, self.config.buffer_limit)
+        while True:
+            if not drain_backlog and self.stop_event.wait(self.config.send_interval_seconds):
+                break
             try:
                 self._report_packet_metadata_drops()
                 self._expire_idle_flows()
                 self._flush_features_if_due()
-                self.send_pending()
+                result = self.send_pending()
+                drain_backlog = (
+                    result.sent >= batch_limit
+                    and result.failed == 0
+                    and not self.stop_event.is_set()
+                )
             except (OSError, sqlite3.Error) as exc:
+                drain_backlog = False
                 self.logger.warning(
                     "Edge persistence or delivery cycle failed; retrying: %s",
                     type(exc).__name__,
@@ -381,3 +400,14 @@ def _flow_key(flow: Any) -> tuple[str, str, int, int, str]:
         ((flow.source_ip, flow.source_port), (flow.destination_ip, flow.destination_port))
     )
     return first[0], second[0], first[1], second[1], flow.protocol
+
+
+def _packet_window_key(packet: PacketMetadata) -> tuple[object, ...]:
+    return (
+        packet.source_ip,
+        packet.destination_ip,
+        packet.protocol,
+        packet.destination_port,
+        packet.source_mac,
+        packet.dns_related,
+    )

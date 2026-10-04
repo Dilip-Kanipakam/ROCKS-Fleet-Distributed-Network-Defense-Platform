@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -28,8 +29,19 @@ class HubStorage:
     def __init__(self, database_path: str | Path, edge_liveness_timeout_seconds: int = 60) -> None:
         self.database_path = Path(database_path)
         self.edge_liveness_timeout_seconds = max(1, int(edge_liveness_timeout_seconds))
+        self._initialized = False
+        self._initialization_lock = threading.Lock()
 
     def initialize(self) -> None:
+        if self._initialized:
+            return
+        with self._initialization_lock:
+            if self._initialized:
+                return
+            self._initialize_schema()
+            self._initialized = True
+
+    def _initialize_schema(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             enable_wal(connection)

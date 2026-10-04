@@ -39,7 +39,10 @@ def test_config_loading():
 
 def test_path_generation():
     root = project_root()
-    assert root.name == "Project-RocksFleet"
+    assert root.is_dir()
+    assert config_dir() == root / "config"
+    assert data_dir() == root / "data"
+    assert log_dir() == root / "logs"
     assert config_dir().is_dir()
     assert data_dir().name == "data"
     assert log_dir().name == "logs"

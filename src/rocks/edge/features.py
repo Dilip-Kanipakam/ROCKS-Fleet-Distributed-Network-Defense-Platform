@@ -97,10 +97,14 @@ def aggregate_features(
         end = window_end if window_end is not None else start + window_seconds
 
     duration = max(window_seconds, end - start)
-    total_bytes = sum(packet.packet_length for packet in scoped_packets)
-    sent = sum(packet.packet_length for packet in scoped_packets if source_ip is not None and packet.source_ip == source_ip)
+    total_bytes = sum(packet.aggregate_bytes or 0 for packet in scoped_packets)
+    sent = sum(
+        packet.aggregate_bytes or 0
+        for packet in scoped_packets
+        if source_ip is not None and packet.source_ip == source_ip
+    )
     received = sum(
-        packet.packet_length
+        packet.aggregate_bytes or 0
         for packet in scoped_packets
         if source_ip is not None and packet.destination_ip == source_ip and packet.source_ip != source_ip
     )
@@ -111,12 +115,15 @@ def aggregate_features(
         device_id = f"{source_ip}|{chosen_mac}"
 
     destination_ips = [packet.destination_ip for packet in outbound if packet.destination_ip]
-    destination_counts = Counter(destination_ips)
+    destination_counts: Counter[str] = Counter()
+    for packet in outbound:
+        if packet.destination_ip:
+            destination_counts[packet.destination_ip] += packet.packet_count
 
     return TrafficFeatures(
         window_start=start,
         window_end=end,
-        packet_count=len(scoped_packets),
+        packet_count=sum(packet.packet_count for packet in scoped_packets),
         total_bytes=total_bytes,
         bytes_sent=sent,
         bytes_received=received,
@@ -127,12 +134,12 @@ def aggregate_features(
             {packet.destination_port for packet in outbound if packet.destination_port is not None}
         ),
         unique_source_ip_count=len({packet.source_ip for packet in scoped_packets if packet.source_ip}),
-        tcp_packet_count=sum(packet.protocol == "TCP" for packet in scoped_packets),
-        udp_packet_count=sum(packet.protocol == "UDP" for packet in scoped_packets),
-        icmp_packet_count=sum(packet.protocol == "ICMP" for packet in scoped_packets),
-        dns_packet_count=sum(packet.dns_related for packet in scoped_packets),
+        tcp_packet_count=sum(packet.packet_count for packet in scoped_packets if packet.protocol == "TCP"),
+        udp_packet_count=sum(packet.packet_count for packet in scoped_packets if packet.protocol == "UDP"),
+        icmp_packet_count=sum(packet.packet_count for packet in scoped_packets if packet.protocol == "ICMP"),
+        dns_packet_count=sum(packet.packet_count for packet in scoped_packets if packet.dns_related),
         traffic_rate=total_bytes / duration,
-        packet_rate=len(scoped_packets) / duration,
+        packet_rate=sum(packet.packet_count for packet in scoped_packets) / duration,
         device_id=device_id,
         repeated_destination_count=sum(1 for count in destination_counts.values() if count > 1),
     )
