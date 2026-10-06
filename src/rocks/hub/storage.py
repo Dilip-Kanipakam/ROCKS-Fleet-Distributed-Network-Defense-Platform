@@ -757,7 +757,15 @@ class HubStorage:
         item.update({key: payload[key] for key in allowed_fields if key in payload})
         return item
 
-    def query_telemetry(self, *, sensor_id: str | None = None, device_id: str | None = None, event_type: str | None = None, limit: int = 100) -> list[TelemetryRecord]:
+    def query_telemetry(
+        self,
+        *,
+        sensor_id: str | None = None,
+        device_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 100,
+        exclude_simulation: bool = False,
+    ) -> list[TelemetryRecord]:
         self.initialize()
         clauses: list[str] = []
         values: list[Any] = []
@@ -765,6 +773,12 @@ class HubStorage:
             if value is not None:
                 clauses.append(f"{column} = ?")
                 values.append(value)
+        if exclude_simulation:
+            clauses.append(
+                "(CASE WHEN json_valid(payload_json) "
+                "THEN COALESCE(json_extract(payload_json, '$.payload.simulation'), 0) "
+                "ELSE 0 END) != 1"
+            )
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         values.append(min(max(int(limit), 1), 1000))
         with self._connect() as connection:

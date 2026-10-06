@@ -47,6 +47,54 @@ def test_deployment_mode_selects_expected_units(mode, expected):
     assert deployment_units(_config(mode)) == expected
 
 
+def test_status_command_reports_current_service_states(monkeypatch, capsys):
+    class CurrentServiceManager:
+        def status(self):
+            return [
+                (EDGE_UNIT, "inactive", "enabled"),
+                (HUB_UNIT, "active", "enabled"),
+            ]
+
+    monkeypatch.setattr("rocks.cli.ServiceManager", CurrentServiceManager)
+
+    assert main(["status"]) == 0
+    output = capsys.readouterr().out
+    assert f"{EDGE_UNIT}: inactive (enabled: enabled)" in output
+    assert f"{HUB_UNIT}: active (enabled: enabled)" in output
+    assert "No Edge or Hub services are running yet." not in output
+
+
+@pytest.mark.parametrize(("api_status", "expected"), [("OK", "yes"), ("WARNING", "no")])
+def test_hub_status_reports_health_endpoint_state(tmp_path, monkeypatch, capsys, api_status, expected):
+    import rocks.cli
+
+    from rocks.health import HealthStatus
+
+    config = _config("hub")
+    config["storage"] = {
+        "database": str(tmp_path / "edge.db"),
+        "buffer": str(tmp_path / "buffer.db"),
+        "hub_database": str(tmp_path / "hub.db"),
+    }
+    config_path = tmp_path / "config.yaml"
+    write_config(config, config_path)
+    monkeypatch.setenv("ROCKS_CONFIG_PATH", str(config_path))
+
+    class CurrentHealthChecker:
+        def run(self):
+            class Report:
+                def get(self, name):
+                    assert name == "hub_api"
+                    return type("Check", (), {"status": getattr(HealthStatus, api_status)})()
+
+            return Report()
+
+    monkeypatch.setattr(rocks.cli, "HealthChecker", CurrentHealthChecker)
+
+    assert main(["hub", "status"]) == 0
+    assert f"HTTP server running: {expected}" in capsys.readouterr().out
+
+
 def test_edge_unit_uses_existing_python_and_config_without_secrets(tmp_path):
     from rocks.service_manager import _systemd_environment_file_path
 

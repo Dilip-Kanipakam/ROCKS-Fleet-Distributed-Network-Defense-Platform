@@ -3,13 +3,18 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 
+from rocks.alerts.engine import AlertEngine
+from rocks.detection.config import DetectionConfig
+from rocks.detection.engine import DetectionEngine
 from rocks.edge.features import TrafficFeatures
 from rocks.edge.telemetry import behavior_summary_telemetry
 from rocks.hub.registry import EdgeRegistry
 from rocks.hub.service import HubService
 from rocks.hub.storage import HubStorage
 from rocks.ml.analysis import analyze_behavior_summary
+from rocks.ml.service import MLService
 
 
 def make_record(sensor_id: str = "EDGE-01"):
@@ -82,18 +87,60 @@ def test_analysis_is_unique_by_telemetry_and_model(tmp_path):
     assert stored.baseline_status == "BASELINE_NOT_READY"
 
 
-def test_ml_failure_does_not_break_telemetry_ingestion(tmp_path):
+def test_ml_failure_does_not_break_deterministic_detection_or_alerting(tmp_path):
     storage = HubStorage(tmp_path / "hub.db")
     service = HubService(storage)
     service.registry.register("EDGE-01")
 
     class FailingML:
-        def analyze_and_store(self, _record):
+        def analyze(self, _record):
             raise RuntimeError("synthetic ML failure")
 
     service.ml = FailingML()
-    assert service.ingest(make_record()) is True
+    service.detection = DetectionEngine(DetectionConfig(high_traffic_rate=200))
+    service.alerts = AlertEngine()
+    record = behavior_summary_telemetry(
+        TrafficFeatures(0, 60, 1, 10_000, 5_000, 5_000, 1, 1, 1, 1, 1, 1, 0, 0, 0, 250, 0.1),
+        "EDGE-01",
+        device_id="DEVICE-01",
+        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert service.ingest(record) is True
     assert storage.count() == 1
+    assessments = storage.recent_detection_assessments()
+    assert len(assessments) == 1
+    assert [rule["rule_id"] for rule in assessments[0]["assessment"]["rules_triggered"]] == ["HIGH_TRAFFIC"]
+    alerts = storage.recent_alerts()
+    assert len(alerts) == 1
+    assert alerts[0]["telemetry_id"] == record.record_id
+
+
+def test_ml_training_excludes_simulated_telemetry(tmp_path):
+    storage = HubStorage(tmp_path / "training-hub.db")
+    normal_records = [
+        replace(
+            make_record(),
+            timestamp=(datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=index)).isoformat().replace("+00:00", "Z"),
+            record_id="",
+        )
+        for index in range(3)
+    ]
+    simulated_records = [
+        replace(
+            record,
+            payload={**record.payload, "simulation": True, "simulation_type": "HIGH_TRAFFIC"},
+            record_id="",
+        )
+        for record in normal_records
+    ]
+    for record in (*normal_records, *simulated_records):
+        storage.insert_telemetry(record)
+
+    service = MLService(storage, tmp_path / "baseline.joblib", minimum_samples=3)
+
+    assert service.train() == len(normal_records)
+    assert service.model.training_samples == len(normal_records)
 
 
 def test_dashboard_edge_rows_and_direct_telemetry_queries_are_bounded(tmp_path):

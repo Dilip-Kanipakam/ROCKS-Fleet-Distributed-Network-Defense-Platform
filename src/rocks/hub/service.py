@@ -134,8 +134,13 @@ class HubService:
         inserted = self.storage.insert_telemetry(record)
         self.registry.touch(record.sensor_id)
         if inserted:
+            analysis = None
+            if self.ml is not None:
+                try:
+                    analysis = self.ml.analyze(record)
+                except Exception:
+                    self._logger.exception("Optional ML analysis failed for telemetry %s", record.record_id)
             try:
-                analysis = self.ml.analyze(record) if self.ml is not None else None
                 assessment = self.detection.assess(record, analysis)
                 self.storage.insert_detection_assessment(assessment)
                 if analysis is not None:

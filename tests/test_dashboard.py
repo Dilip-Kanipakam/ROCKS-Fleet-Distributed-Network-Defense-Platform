@@ -304,28 +304,34 @@ def test_device_investigation_alert_link_and_state_are_read_only(tmp_path, monke
     client.post("/dashboard/login", data={"username": "admin", "password": "correct-password"})
     service = client.app.state.hub_service
     device_id = "DEVICE-ALERT-01"
-    record = behavior_summary_telemetry(
-        TrafficFeatures(0, 60, 1, 10000, 5000, 5000, 1, 1, 1, 1, 1, 1, 0, 0, 0, 250, 0.1, device_id),
-        "EDGE-ALERT-01", device_id=device_id,
-        timestamp=datetime(2026, 9, 30, 9, tzinfo=timezone.utc),
-    )
-    service.storage.insert_telemetry(record)
-    assessment = DetectionEngine().assess(record)
-    service.storage.insert_detection_assessment(assessment)
-    alert = AlertEngine().create_alert(None, assessment=assessment, record=record)
-    assert alert is not None
-    service.storage.insert_alert(alert)
+    alert_records = []
+    for minute in range(3):
+        record = behavior_summary_telemetry(
+            TrafficFeatures(0, 60, 1, 10000, 5000, 5000, 1, 1, 1, 1, 1, 1, 0, 0, 0, 250, 0.1, device_id),
+            "EDGE-ALERT-01", device_id=device_id,
+            timestamp=datetime(2026, 9, 30, 9, minute, tzinfo=timezone.utc),
+        )
+        service.storage.insert_telemetry(record)
+        assessment = DetectionEngine().assess(record)
+        service.storage.insert_detection_assessment(assessment)
+        alert = AlertEngine().create_alert(None, assessment=assessment, record=record)
+        assert alert is not None
+        service.storage.insert_alert(alert)
+        alert_records.append((alert, record))
     monkeypatch.setattr(service.email_notifications, "send_alert", lambda *_args: pytest.fail("opening investigation sent email"))
 
     alerts_page = client.get("/dashboard/alerts")
     assert "Investigate Device" in alerts_page.text
     assert f"/dashboard/investigation/{device_id}" in alerts_page.text
-    assert service.storage.get_alert(alert.alert_id).status == "OPEN"
-    investigation = client.get(f"/dashboard/investigation/{device_id}?at={record.timestamp}&sensor_id=EDGE-ALERT-01")
+    assert all(service.storage.get_alert(alert.alert_id).status == "OPEN" for alert, _ in alert_records)
+    investigation = client.get(
+        f"/dashboard/investigation/{device_id}?at={alert_records[-1][1].timestamp}&sensor_id=EDGE-ALERT-01"
+    )
     assert investigation.status_code == 200
-    assert "OPEN" in investigation.text
-    assert service.storage.get_alert(alert.alert_id).status == "OPEN"
-    assert service.storage.get_alert(alert.alert_id).notification_attempt_count == 0
+    assert "Current alert state</span><strong>OPEN</strong>" in investigation.text
+    assert "OPEN · OPEN" not in investigation.text
+    assert len(service.storage.investigation_alerts_for_device(device_id, sensor_id="EDGE-ALERT-01")) == 3
+    assert all(service.storage.get_alert(alert.alert_id).notification_attempt_count == 0 for alert, _ in alert_records)
 
 
 def test_dashboard_case_lifecycle_actions_and_closed_case_behavior(tmp_path, monkeypatch):
@@ -414,7 +420,10 @@ def test_dashboard_analyst_notes_actions_auth_timeline_and_closed_case(tmp_path,
     note_url = f"/api/v1/dashboard/investigations/{case_id}/notes"
     action_url = f"/api/v1/dashboard/investigations/{case_id}/actions"
     note = client.post(note_url, json={"note_text": "Reviewed counters; no payload retained."})
-    action = client.post(action_url, json={"category": "TRAFFIC_REVIEWED"})
+    action = client.post(
+        action_url,
+        json={"category": "TRAFFIC_REVIEWED", "message": "Reviewed the telemetry counters."},
+    )
     assert note.status_code == 201
     assert note.json()["author"] == "admin"
     assert action.status_code == 201
@@ -426,6 +435,9 @@ def test_dashboard_analyst_notes_actions_auth_timeline_and_closed_case(tmp_path,
     assert "Reviewed counters; no payload retained." in page.text
     assert "admin" in page.text
     assert "Record investigation action" in page.text
+    assert '<ol class="action-list">' in page.text
+    assert "Reviewed the telemetry counters." in page.text
+    assert action.json()["timestamp"] in page.text
     assert "TRAFFIC_REVIEWED" in page.text
     assert "ANALYST_NOTE" in page.text
     assert "ANALYST_ACTION" in page.text

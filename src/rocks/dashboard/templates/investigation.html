@@ -24,7 +24,7 @@
       </form>
       {% if start and end %}<p class="muted">{{ start }} to {{ end }}</p>{% endif %}
       <div class="state-strip">
-        <div><span class="muted">Current alert state</span><strong>{% if alerts %}{% for alert in alerts %}{{ alert.status }}{% if not loop.last %} · {% endif %}{% endfor %}{% else %}No alerts in stored device context{% endif %}</strong></div>
+        <div><span class="muted">Current alert state</span><strong>{% if alerts %}{{ alerts[0].status }}{% else %}No alerts in stored device context{% endif %}</strong></div>
         <div><span class="muted">Investigation cases</span><strong>{% if cases %}{% for case in cases %}{{ case.status }}{% if not loop.last %} · {% endif %}{% endfor %}{% else %}No cases{% endif %}</strong></div>
       </div>
     </section>
@@ -54,6 +54,12 @@
             {% for note in notes %}<li><div><strong>{{ note.author }}</strong><time>{{ note.timestamp }}</time>{% if note.category %}<span class="pill">{{ note.category }}</span>{% endif %}</div><p>{{ note.note_text }}</p></li>{% endfor %}
           </ol>
           {% else %}<p class="muted">No analyst notes recorded.</p>{% endif %}
+          <h3>Investigation actions</h3>
+          {% if actions %}
+          <ol class="action-list">
+            {% for action in actions %}<li><div><strong>{{ action.author }}</strong><time>{{ action.timestamp }}</time>{% if action.category %}<span class="pill">{{ action.category }}</span>{% endif %}</div>{% if action.message %}<p>{{ action.message }}</p>{% endif %}</li>{% endfor %}
+          </ol>
+          {% else %}<p class="muted">No investigation actions recorded.</p>{% endif %}
           {% if selected_case.status != 'CLOSED' %}
           <form id="analyst-note-form" class="case-form">
             <h3>Add analyst note</h3>

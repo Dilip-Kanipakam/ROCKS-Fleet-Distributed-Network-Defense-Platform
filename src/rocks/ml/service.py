@@ -28,7 +28,11 @@ class MLService:
         )
 
     def train(self) -> int:
-        records = self.storage.query_telemetry(event_type="BEHAVIOR_SUMMARY", limit=MAX_TRAINING_RECORDS)
+        records = self.storage.query_telemetry(
+            event_type="BEHAVIOR_SUMMARY",
+            limit=MAX_TRAINING_RECORDS,
+            exclude_simulation=True,
+        )
         count = self.model.train(records)
         if count >= self.model.minimum_samples:
             self.model.save()
