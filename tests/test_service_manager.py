@@ -59,12 +59,17 @@ def test_status_command_reports_current_service_states(monkeypatch, capsys):
 
     assert main(["status"]) == 0
     output = capsys.readouterr().out
+    assert "ROCKS Fleet service status:" in output
+    assert "foundation is installed" not in output
     assert f"{EDGE_UNIT}: inactive (enabled: enabled)" in output
     assert f"{HUB_UNIT}: active (enabled: enabled)" in output
     assert "No Edge or Hub services are running yet." not in output
 
 
-@pytest.mark.parametrize(("api_status", "expected"), [("OK", "yes"), ("WARNING", "no")])
+@pytest.mark.parametrize(
+    ("api_status", "expected"),
+    [("OK", "yes"), ("WARNING", "no"), ("MISSING", "unknown")],
+)
 def test_hub_status_reports_health_endpoint_state(tmp_path, monkeypatch, capsys, api_status, expected):
     import rocks.cli
 
@@ -85,6 +90,8 @@ def test_hub_status_reports_health_endpoint_state(tmp_path, monkeypatch, capsys,
             class Report:
                 def get(self, name):
                     assert name == "hub_api"
+                    if api_status == "MISSING":
+                        return None
                     return type("Check", (), {"status": getattr(HealthStatus, api_status)})()
 
             return Report()
@@ -92,7 +99,10 @@ def test_hub_status_reports_health_endpoint_state(tmp_path, monkeypatch, capsys,
     monkeypatch.setattr(rocks.cli, "HealthChecker", CurrentHealthChecker)
 
     assert main(["hub", "status"]) == 0
-    assert f"HTTP server running: {expected}" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert f"HTTP server configured: 127.0.0.1:8000" in output
+    assert f"HTTP server running: {expected}" in output
+    assert "HTTP server configured: yes" not in output
 
 
 def test_edge_unit_uses_existing_python_and_config_without_secrets(tmp_path):

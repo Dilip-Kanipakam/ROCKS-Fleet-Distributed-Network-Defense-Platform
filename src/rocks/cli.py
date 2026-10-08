@@ -803,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "status":
-        print("ROCKS Fleet foundation is installed.")
+        print("ROCKS Fleet service status:")
         try:
             service_statuses = ServiceManager().status()
         except (OSError, RuntimeError, ServiceManagerError) as exc:
@@ -1032,13 +1032,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ROCKS Hub database: {config.database_path}")
             print(f"Registered Edge sensors: {len(registry.list())}")
             print(f"Telemetry records: {storage.count()}")
-            print("HTTP server configured: yes")
+            print(f"HTTP server configured: {config.host}:{config.port}")
             try:
                 hub_api = HealthChecker().run().get("hub_api")
             except (OSError, RuntimeError, ValueError, StopIteration):
                 print("HTTP server running: unknown")
             else:
-                print(f"HTTP server running: {'yes' if hub_api.status == HealthStatus.OK else 'no'}")
+                if hub_api is None:
+                    print("HTTP server running: unknown")
+                else:
+                    print(f"HTTP server running: {'yes' if hub_api.status == HealthStatus.OK else 'no'}")
             return 0
         if args.hub_command == "run":
             import uvicorn

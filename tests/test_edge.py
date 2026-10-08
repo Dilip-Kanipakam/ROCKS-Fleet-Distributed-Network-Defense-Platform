@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from scapy.layers.inet import ICMP, IP, TCP, UDP
 from scapy.layers.l2 import Ether
 from scapy.packet import Raw
@@ -61,6 +63,61 @@ def test_invalid_capture_interface_has_clear_error():
         assert "does not exist" in str(exc)
     else:
         raise AssertionError("expected an invalid interface error")
+
+
+def test_idle_capture_stops_without_waiting_for_a_packet(monkeypatch):
+    ready = threading.Event()
+    finished = threading.Event()
+
+    class IdleSniffer:
+        def __init__(self, **kwargs):
+            self.started_callback = kwargs["started_callback"]
+            self.running = False
+            self.stop_called = False
+            self.thread = self
+
+        def start(self):
+            self.running = True
+            self.started_callback()
+            ready.set()
+
+        def is_alive(self):
+            return self.running
+
+        def stop(self, *, join):
+            assert join is True
+            self.stop_called = True
+            self.running = False
+
+        def join(self):
+            return None
+
+    sniffers = []
+
+    def make_sniffer(**kwargs):
+        sniffer = IdleSniffer(**kwargs)
+        sniffers.append(sniffer)
+        return sniffer
+
+    monkeypatch.setattr("rocks.edge.capture.AsyncSniffer", make_sniffer)
+    monkeypatch.setattr(PacketCapture, "available_interfaces", staticmethod(lambda: ["test0"]))
+    capture = PacketCapture("test0", lambda _packet: None)
+
+    def run_capture():
+        capture.start()
+        finished.set()
+
+    capture_thread = threading.Thread(target=run_capture, daemon=True)
+
+    capture_thread.start()
+    assert ready.wait(timeout=1)
+    capture.stop()
+    capture_thread.join(timeout=1)
+
+    assert finished.is_set()
+    assert not capture_thread.is_alive()
+    assert len(sniffers) == 1
+    assert sniffers[0].stop_called
 
 
 def test_flow_creation_and_byte_packet_counting():

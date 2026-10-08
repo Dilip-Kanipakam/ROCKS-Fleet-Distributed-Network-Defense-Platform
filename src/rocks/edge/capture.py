@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
-from scapy.all import get_if_list, sniff
+from scapy.all import AsyncSniffer, get_if_list
 from scapy.packet import Packet
 
 from rocks.logging_config import configure_logging
@@ -42,13 +42,27 @@ class PacketCapture:
         self.validate_interface()
         self._stop_event.clear()
         self._logger.info("Edge capture started on interface %s", self.interface)
+        started = threading.Event()
+        sniffer = AsyncSniffer(
+            iface=self.interface,
+            prn=self._handle_packet,
+            store=False,
+            started_callback=started.set,
+        )
         try:
-            sniff(
-                iface=self.interface,
-                prn=self._handle_packet,
-                store=False,
-                stop_filter=lambda _packet: self._stop_event.is_set(),
-            )
+            sniffer.start()
+            while not started.wait(timeout=0.1):
+                if not sniffer.thread.is_alive():
+                    sniffer.join()
+                    raise CaptureError("Live capture stopped before it was ready")
+            while not self._stop_event.wait(timeout=0.1):
+                if not sniffer.thread.is_alive():
+                    sniffer.join()
+                    raise CaptureError("Live capture stopped unexpectedly")
+            if sniffer.thread.is_alive() and sniffer.running:
+                sniffer.stop(join=True)
+            else:
+                sniffer.join()
         except PermissionError as exc:
             raise CaptureError(
                 "Live capture permission denied; run authorized capture with appropriate privileges"
